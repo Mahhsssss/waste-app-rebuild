@@ -89,7 +89,7 @@ export default function WelcomeScreen({ onNavigate }) {
             <Text style={globalStyles.pillButtonText}>Continue with Email</Text>
           </TouchableOpacity>
 
-          {/* Instant Guest / Demo Access */}
+          {/* Continue as Guest */}
           <TouchableOpacity
             style={[
               globalStyles.pillButton,
@@ -107,14 +107,14 @@ export default function WelcomeScreen({ onNavigate }) {
               <ActivityIndicator size="small" color={colors.primary600} />
             ) : (
               <>
-                <Ionicons name="sparkles" size={18} color="#059669" />
+                <Ionicons name="person-outline" size={18} color="#059669" />
                 <Text
                   style={[
                     globalStyles.pillButtonText,
                     { color: '#047857', fontWeight: '700' },
                   ]}
                 >
-                  Explore as Guest (Instant Demo)
+                  Continue as Guest
                 </Text>
               </>
             )}

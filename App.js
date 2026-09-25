@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,6 +29,19 @@ import { colors } from './src/globalStyles';
 
 const Tab = createBottomTabNavigator();
 const RootStack = createNativeStackNavigator();
+
+// Placeholder for the camera tab; the tab press is intercepted, this only catches stray focus
+function ScanLauncher({ navigation }) {
+  useEffect(
+    () =>
+      navigation.addListener('focus', () => {
+        navigation.navigate('HomeTab');
+        navigation.navigate('ScanCamera');
+      }),
+    [navigation]
+  );
+  return <View style={{ flex: 1, backgroundColor: '#000' }} />;
+}
 
 function MainAppTabs() {
   const insets = useSafeAreaInsets();
@@ -67,10 +80,17 @@ function MainAppTabs() {
       <Tab.Screen name="HomeTab" component={HomeScreen} />
       <Tab.Screen name="NgoTab" component={NgoScreen} />
 
-      {/* Center Camera / Scanner Button */}
+      {/* Center Camera / Scanner Button: opens the full-screen scanner on the root stack.
+          A live camera preview inside a tab can render black on Android. */}
       <Tab.Screen
         name="ScanTab"
-        component={ScanScreen}
+        component={ScanLauncher}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            e.preventDefault();
+            navigation.navigate('ScanCamera');
+          },
+        })}
         options={{
           tabBarIcon: ({ focused }) => (
             <View style={[styles.scanButtonContainer, focused && styles.scanButtonContainerActive]}>
@@ -102,6 +122,7 @@ function RootNavigator() {
     return (
       <RootStack.Navigator screenOptions={{ headerShown: false }}>
         <RootStack.Screen name="MainTabs" component={MainAppTabs} />
+        <RootStack.Screen name="ScanCamera" component={ScanScreen} options={{ animation: 'fade' }} />
         <RootStack.Screen name="MapTab" component={MapScreen} />
         <RootStack.Screen name="RecycleAdviceScreen" component={RecycleAdviceScreen} />
         <RootStack.Screen name="DosDontsScreen" component={DosDontsScreen} />

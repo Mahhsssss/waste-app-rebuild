@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useContext } from 'react';
 import {
   StyleSheet,
   Text,
@@ -9,37 +9,212 @@ import {
   Linking,
   Platform,
   Alert,
-  Modal,
   TextInput,
+  Animated,
+  PanResponder,
+  ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BottomTabBarHeightContext } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
-import globalStyles, { colors, spacing, radius } from '../globalStyles';
+import { WebView } from 'react-native-webview';
+import { colors, spacing, radius } from '../globalStyles';
 import { getReports, subscribeReports } from '../services/reportService';
 import { DEFAULT_RECOVERY_HUBS, fetchRecoveryHubs } from '../services/hubService';
+import { getCurrentCoords } from '../utils/location';
+
+const TYPE_META = {
+  centre: { label: 'Recycling centre', icon: 'business', color: '#2E7D32', tint: '#E8F5E9' },
+  dump: { label: 'Dump report', icon: 'warning', color: '#DC2626', tint: '#FEE2E2' },
+  mine: { label: 'Your report', icon: 'person', color: '#D97706', tint: '#FEF3C7' },
+};
+
+// Filter keys stay the same as before because other screens pass them as route params
+const FILTERS = [
+  { key: 'All', label: 'All' },
+  { key: 'NGOs', label: 'Recycling Centres', color: TYPE_META.centre.color },
+  { key: 'Trash Dumps', label: 'Dumps', color: TYPE_META.dump.color },
+  { key: 'My Reports', label: 'My Reports', color: TYPE_META.mine.color },
+];
+
+const SHEET_TITLES = {
+  All: 'All places',
+  NGOs: 'Recycling centres',
+  'Trash Dumps': 'Dump reports',
+  'My Reports': 'Your reports',
+};
+
+const SHEET_MIN = 214; // visible height of the collapsed sheet
+const FAB_SIZE = 46;
+
+const typeOf = (m) => (m.isNgo ? 'centre' : m.isMyReport ? 'mine' : 'dump');
+
+const distanceKm = (a, b) => {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+};
+
+const formatKm = (km) => (km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`);
+
+// Static Leaflet page. It is loaded once; markers, focus and layers are pushed in via JS calls
+// so selecting a place pans the map instead of reloading it.
+const buildMapHtml = (center) => `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body, #map { width: 100%; height: 100%; margin: 0; padding: 0; background: #EEF2EF; }
+    .leaflet-control-attribution { font-size: 9px; background: rgba(255,255,255,0.7) !important; }
+    .pin { width: 26px; height: 26px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+      border: 2.5px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      display: flex; align-items: center; justify-content: center; transition: transform 0.15s; }
+    .pin::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #fff; }
+    .pin.centre { background: #2E7D32; }
+    .pin.dump { background: #DC2626; }
+    .pin.mine { background: #D97706; }
+    .pin.active { transform: rotate(-45deg) scale(1.35); }
+    .me { width: 14px; height: 14px; border-radius: 50%; background: #2563EB; border: 3px solid #fff;
+      box-shadow: 0 0 0 7px rgba(37,99,235,0.2); }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    function send(msg) {
+      if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(msg));
+      else if (window.parent && window.parent !== window) window.parent.postMessage(msg, '*');
+    }
+    if (typeof L === 'undefined') {
+      send({ type: 'MAP_ERROR' });
+    } else {
+      var map = L.map('map', { zoomControl: false }).setView([${center.latitude}, ${center.longitude}], 12);
+      // Free tile sources that need no API key
+      var layers = {
+        street: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19, attribution: '© OpenStreetMap contributors'
+        }),
+        satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+          maxZoom: 19, attribution: 'Tiles © Esri'
+        })
+      };
+      var streetBackup = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19, attribution: 'Tiles © Esri'
+      });
+      // If OpenStreetMap refuses tiles, switch the street layer to Esri
+      var streetErrors = 0;
+      layers.street.on('tileerror', function () {
+        streetErrors += 1;
+        if (streetErrors !== 3) return;
+        var wasShowing = current === layers.street;
+        if (wasShowing) map.removeLayer(layers.street);
+        layers.street = streetBackup;
+        if (wasShowing) current = streetBackup.addTo(map);
+      });
+      var current = layers.street.addTo(map);
+      var markerLayer = L.layerGroup().addTo(map);
+      var byId = {};
+      var activeId = null;
+      var meMarker = null;
+      var offsetY = 0;
+
+      function iconFor(m, active) {
+        return L.divIcon({
+          className: '',
+          html: '<div class="pin ' + m.kind + (active ? ' active' : '') + '"></div>',
+          iconSize: [26, 26],
+          iconAnchor: [13, 26]
+        });
+      }
+
+      function flyWithOffset(lat, lng, zoom) {
+        var p = map.project([lat, lng], zoom).add([0, offsetY]);
+        map.flyTo(map.unproject(p, zoom), zoom, { duration: 0.6 });
+      }
+
+      window.setOffset = function (px) { offsetY = px; };
+
+      window.setMarkers = function (list, fit) {
+        markerLayer.clearLayers();
+        byId = {};
+        var pts = [];
+        list.forEach(function (m) {
+          if (!m.lat || !m.lng) return;
+          var mk = L.marker([m.lat, m.lng], { icon: iconFor(m, m.id === activeId) });
+          mk._data = m;
+          mk.on('click', function () { send({ type: 'SELECT_MARKER', markerId: m.id }); });
+          mk.addTo(markerLayer);
+          byId[m.id] = mk;
+          pts.push([m.lat, m.lng]);
+        });
+        if (fit && pts.length > 1) {
+          map.fitBounds(pts, { paddingTopLeft: [40, 150], paddingBottomRight: [40, 40 + offsetY * 2] });
+        } else if (fit && pts.length === 1) {
+          flyWithOffset(pts[0][0], pts[0][1], 15);
+        }
+      };
+
+      window.focusMarker = function (id, lat, lng) {
+        if (activeId && byId[activeId]) byId[activeId].setIcon(iconFor(byId[activeId]._data, false));
+        activeId = id;
+        if (id && byId[id]) byId[id].setIcon(iconFor(byId[id]._data, true));
+        if (lat && lng) flyWithOffset(lat, lng, Math.max(map.getZoom(), 15));
+      };
+
+      window.setLayer = function (name) {
+        var next = layers[name] || layers.street;
+        if (next === current) return;
+        map.removeLayer(current);
+        current = next.addTo(map);
+      };
+
+      window.showMe = function (lat, lng) {
+        if (meMarker) meMarker.setLatLng([lat, lng]);
+        else meMarker = L.marker([lat, lng], {
+          icon: L.divIcon({ className: '', html: '<div class="me"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }),
+          zIndexOffset: 1000
+        }).addTo(map);
+        flyWithOffset(lat, lng, 15);
+      };
+
+      map.on('click', function () { send({ type: 'MAP_TAP' }); });
+      send({ type: 'READY' });
+    }
+  </script>
+</body>
+</html>`;
 
 export default function MapScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
+  const tabBarHeightCtx = useContext(BottomTabBarHeightContext);
+  const inTabs = tabBarHeightCtx !== undefined;
+  const bottomOffset = inTabs ? tabBarHeightCtx : insets.bottom;
+
   const [reports, setReports] = useState([]);
+  const [ngoCenters, setNgoCenters] = useState(DEFAULT_RECOVERY_HUBS);
   const [selectedFilter, setSelectedFilter] = useState('NGOs'); // 'NGOs' | 'My Reports' | 'Trash Dumps' | 'All'
   const [selectedMarker, setSelectedMarker] = useState(null);
-  const [detailsModalItem, setDetailsModalItem] = useState(null);
-  const [zoomLevel, setZoomLevel] = useState(13);
-  const [mapMode, setMapMode] = useState('pins'); // 'pins' = Multi-Pin Overview, 'm' = Street, 'k' = Satellite
-  const [isLocating, setIsLocating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [mapLayer, setMapLayer] = useState('street');
+  const [showLayers, setShowLayers] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [userLocation, setUserLocation] = useState(null);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState(false);
+  const [sheetExpanded, setSheetExpanded] = useState(false);
 
-  // All 15 verified Recovery Hubs from Supabase markers table
-  const [ngoCenters, setNgoCenters] = useState(DEFAULT_RECOVERY_HUBS);
+  const webViewRef = useRef(null);
+  const iframeRef = useRef(null);
 
-  // Central coordinates (Default to Greenciti Bhandup West hub)
-  const [activeLocation, setActiveLocation] = useState({
-    latitude: 19.1458,
-    longitude: 72.937,
-    title: 'Greenciti Recovery Hub',
-  });
-
-  // Navigation params: focus on specific dump or NGO
   const focusDumpId = route?.params?.focusDumpId;
   const focusLocation = route?.params?.focusLocation;
 
@@ -53,7 +228,7 @@ export default function MapScreen({ navigation, route }) {
           setNgoCenters(hubs);
         }
       } catch (e) {
-        console.warn('Error loading recovery hubs in MapScreen:', e);
+        console.warn('Error loading recycling centres in MapScreen:', e);
       }
     }
     loadHubs();
@@ -65,6 +240,7 @@ export default function MapScreen({ navigation, route }) {
   useEffect(() => {
     if (route?.params?.filter) {
       setSelectedFilter(route.params.filter);
+      setSelectedMarker(null);
     }
   }, [route?.params?.filter]);
 
@@ -76,364 +252,452 @@ export default function MapScreen({ navigation, route }) {
     return () => unsubscribe();
   }, []);
 
-  // Format reported dumps
-  const dumpMarkers = reports.map((r) => ({
-    ...r,
-    type: 'dump',
-    color: r.severityLevel === 'critical' ? '#DC2626' : '#EA580C',
-    icon: 'warning',
-    isDump: true,
-  }));
+  const allMarkers = useMemo(() => {
+    const dumpMarkers = reports.map((r) => ({ ...r, type: 'dump', isDump: true }));
+    const mine = dumpMarkers.filter((m) => m.isMyReport);
+    return [...mine, ...ngoCenters, ...dumpMarkers.filter((m) => !m.isMyReport)];
+  }, [reports, ngoCenters]);
 
-  const myReports = dumpMarkers.filter((m) => m.isMyReport);
-  const allMarkers = [...myReports, ...ngoCenters, ...dumpMarkers.filter((m) => !m.isMyReport)];
+  const allMarkersRef = useRef(allMarkers);
+  allMarkersRef.current = allMarkers;
 
-  // Route param handler & initial marker selection
+  // Focus a specific dump or centre when navigated here with params
   useEffect(() => {
     if (focusDumpId && reports.length > 0) {
       const found = reports.find((r) => r.id === focusDumpId);
       if (found) {
         setSelectedFilter('My Reports');
         setSelectedMarker({ ...found, isDump: true });
-        setActiveLocation({
-          latitude: found.latitude,
-          longitude: found.longitude,
-          title: found.title,
-        });
       }
     } else if (focusLocation) {
       setSelectedFilter('NGOs');
-      const foundNgo = ngoCenters.find(
-        (n) =>
-          n.id === focusLocation.id ||
-          n.rawId === focusLocation.id ||
-          n.id === `ngo-${focusLocation.id}` ||
-          (focusLocation.title && n.title?.toLowerCase() === focusLocation.title.toLowerCase())
-      ) || focusLocation;
+      const foundNgo =
+        ngoCenters.find(
+          (n) =>
+            n.id === focusLocation.id ||
+            n.rawId === focusLocation.id ||
+            n.id === `ngo-${focusLocation.id}` ||
+            (focusLocation.title && n.title?.toLowerCase() === focusLocation.title.toLowerCase())
+        ) || { ...focusLocation, isNgo: true };
       setSelectedMarker(foundNgo);
-      setActiveLocation({
-        latitude: focusLocation.latitude || foundNgo.latitude,
-        longitude: focusLocation.longitude || foundNgo.longitude,
-        title: focusLocation.title || foundNgo.title || 'Recovery Hub',
-      });
-    } else if (!selectedMarker) {
-      if (ngoCenters.length > 0) {
-        setSelectedMarker(ngoCenters[0]);
-        setActiveLocation({
-          latitude: ngoCenters[0].latitude,
-          longitude: ngoCenters[0].longitude,
-          title: ngoCenters[0].title,
-        });
-      } else if (myReports.length > 0) {
-        setSelectedMarker(myReports[0]);
-        setActiveLocation({
-          latitude: myReports[0].latitude,
-          longitude: myReports[0].longitude,
-          title: myReports[0].title,
-        });
-      }
     }
   }, [focusDumpId, focusLocation, reports, ngoCenters]);
 
-  // PostMessage listener for Web Leaflet multi-pin clicks
-  useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const handleMessage = (event) => {
-        if (event?.data?.type === 'SELECT_MARKER' && event.data.markerId) {
-          const found = allMarkers.find((m) => m.id === event.data.markerId);
-          if (found) {
-            handleSelectMarker(found);
-          }
-        }
-      };
-      window.addEventListener('message', handleMessage);
-      return () => window.removeEventListener('message', handleMessage);
-    }
-  }, [allMarkers]);
-
-  const filteredMarkers = allMarkers.filter((m) => {
-    // Primary tab filtering
-    let matchesCategory = true;
-    if (selectedFilter === 'My Reports') matchesCategory = m.isMyReport;
-    else if (selectedFilter === 'NGOs') matchesCategory = m.isNgo;
-    else if (selectedFilter === 'Trash Dumps') matchesCategory = m.isDump;
-
-    if (!matchesCategory) return false;
-
-    // Search query filtering
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      const titleMatch = (m.title || m.name || '').toLowerCase().includes(q);
-      const addressMatch = (m.address || m.fullAddress || '').toLowerCase().includes(q);
-      const streamsMatch = Array.isArray(m.streams) && m.streams.some((s) => s.toLowerCase().includes(q));
-      const typeMatch = (m.wasteType || m.facilityType || '').toLowerCase().includes(q);
-      return titleMatch || addressMatch || streamsMatch || typeMatch;
-    }
-
-    return true;
-  });
-
-
-  // Real Hardware GPS Location Detector
-  const handleLocateMe = () => {
-    if (typeof navigator !== 'undefined' && navigator.geolocation) {
-      setIsLocating(true);
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const { latitude, longitude } = pos.coords;
-          setIsLocating(false);
-          setActiveLocation({
-            latitude,
-            longitude,
-            title: 'My Current Location',
-          });
-          setSelectedMarker({
-            id: 'my-gps-location',
-            title: 'Your Current Device Location',
-            address: `GPS: ${latitude.toFixed(5)}° N, ${longitude.toFixed(5)}° E`,
-            latitude,
-            longitude,
-            status: 'Device GPS Centered',
-            statusColor: '#166534',
-            notes: 'You are currently here. You can report dumps or locate nearby recovery centers relative to your coordinates.',
-            isGps: true,
-          });
-          Alert.alert('GPS Located', `Google Maps centered on your coordinates: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
-        },
-        (err) => {
-          setIsLocating(false);
-          Alert.alert('GPS Notice', 'Unable to retrieve precise hardware coordinates. Please enable device location permissions.');
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
+  const filteredMarkers = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    const list = allMarkers.filter((m) => {
+      if (selectedFilter === 'My Reports' && !m.isMyReport) return false;
+      if (selectedFilter === 'NGOs' && !m.isNgo) return false;
+      if (selectedFilter === 'Trash Dumps' && !m.isDump) return false;
+      if (!q) return true;
+      return (
+        (m.title || m.name || '').toLowerCase().includes(q) ||
+        (m.address || m.fullAddress || '').toLowerCase().includes(q) ||
+        (Array.isArray(m.streams) && m.streams.some((s) => s.toLowerCase().includes(q))) ||
+        (m.wasteType || m.facilityType || '').toLowerCase().includes(q)
       );
+    });
+    if (userLocation) {
+      return list
+        .map((m) => ({ ...m, distance: distanceKm(userLocation, m) }))
+        .sort((a, b) => a.distance - b.distance);
+    }
+    return list;
+  }, [allMarkers, selectedFilter, searchQuery, userLocation]);
+
+  // ---------- Map bridge ----------
+  const callMap = useCallback((fn, ...args) => {
+    if (Platform.OS === 'web') {
+      const w = iframeRef.current?.contentWindow;
+      if (w && typeof w[fn] === 'function') w[fn](...args);
     } else {
-      Alert.alert('Not Supported', 'Geolocation is not available on this device.');
+      const argStr = args.map((a) => JSON.stringify(a ?? null)).join(',');
+      webViewRef.current?.injectJavaScript(`window.${fn} && window.${fn}(${argStr}); true;`);
+    }
+  }, []);
+
+  const handleMapMessage = useCallback((data) => {
+    if (!data?.type) return;
+    if (data.type === 'READY') {
+      setMapReady(true);
+      setMapError(false);
+    } else if (data.type === 'MAP_ERROR') {
+      setMapError(true);
+    } else if (data.type === 'SELECT_MARKER' && data.markerId) {
+      const found = allMarkersRef.current.find((m) => m.id === data.markerId);
+      if (found) setSelectedMarker(found);
+    } else if (data.type === 'MAP_TAP') {
+      setShowLayers(false);
+    }
+  }, []);
+
+  // Web: the Leaflet iframe talks to us via postMessage
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return undefined;
+    const onMessage = (event) => handleMapMessage(event?.data);
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [handleMapMessage]);
+
+  const onWebViewMessage = (event) => {
+    try {
+      handleMapMessage(JSON.parse(event.nativeEvent.data));
+    } catch (e) {
+      // ignore non-JSON messages
     }
   };
 
-  // Turn-by-Turn Navigation via Google Maps App / Web
-  const handleDirections = (lat, lon) => {
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`;
-    Linking.openURL(url);
-  };
+  // Loaded once so the map never reloads when state changes
+  const initialCenter = useRef({ latitude: 19.1458, longitude: 72.937 }).current;
+  const mapHtml = useMemo(() => buildMapHtml(initialCenter), [initialCenter]);
+  const nativeSource = useMemo(() => ({ html: mapHtml, baseUrl: 'https://localhost/' }), [mapHtml]);
 
-  // Select a marker and recenter Google Maps
-  const handleSelectMarker = (marker) => {
-    setSelectedMarker(marker);
-    setActiveLocation({
-      latitude: marker.latitude,
-      longitude: marker.longitude,
-      title: marker.title,
-    });
-  };
+  // Keep pins centred in the visible area above the collapsed sheet
+  const pinOffset = Math.round((SHEET_MIN + bottomOffset) / 2 - 60);
+  useEffect(() => {
+    if (mapReady) callMap('setOffset', pinOffset);
+  }, [mapReady, pinOffset, callMap]);
 
-  const googleMapsEmbedUrl = `https://maps.google.com/maps?q=${activeLocation.latitude},${activeLocation.longitude}&z=${zoomLevel}&t=${mapMode}&output=embed`;
-
-  const generateLeafletHtml = () => {
-    const markersJson = JSON.stringify(
+  const markerPayload = useMemo(
+    () =>
       filteredMarkers.map((m) => ({
         id: m.id,
-        title: m.title || m.name || 'Location',
-        address: m.address || '',
         lat: m.latitude,
         lng: m.longitude,
-        isNgo: !!m.isNgo,
-        isMyReport: !!m.isMyReport,
-        streams: m.streams || [],
-      }))
+        kind: typeOf(m),
+      })),
+    [filteredMarkers]
+  );
+  const payloadKey = useMemo(() => JSON.stringify(markerPayload), [markerPayload]);
+  const lastFitFilter = useRef(null);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const shouldFit = lastFitFilter.current !== selectedFilter && !selectedMarker;
+    lastFitFilter.current = selectedFilter;
+    callMap('setMarkers', markerPayload, shouldFit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, payloadKey]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    if (selectedMarker) {
+      callMap('focusMarker', selectedMarker.id, selectedMarker.latitude, selectedMarker.longitude);
+    } else {
+      callMap('focusMarker', null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, selectedMarker?.id]);
+
+  useEffect(() => {
+    if (mapReady) callMap('setLayer', mapLayer);
+  }, [mapReady, mapLayer, callMap]);
+
+  // ---------- Bottom sheet ----------
+  const sheetMax = Math.round(winH * 0.62);
+  const collapsedY = sheetMax - SHEET_MIN;
+  const sheetY = useRef(new Animated.Value(collapsedY)).current;
+  const dragStart = useRef(collapsedY);
+
+  const snapSheet = useCallback(
+    (expand) => {
+      setSheetExpanded(expand);
+      Animated.spring(sheetY, {
+        toValue: expand ? 0 : collapsedY,
+        useNativeDriver: true,
+        bounciness: 0,
+        speed: 16,
+      }).start();
+    },
+    [sheetY, collapsedY]
+  );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 6 && Math.abs(g.dy) > Math.abs(g.dx),
+        onPanResponderGrant: () => {
+          sheetY.stopAnimation((v) => {
+            dragStart.current = v;
+          });
+        },
+        onPanResponderMove: (_, g) => {
+          sheetY.setValue(Math.min(collapsedY, Math.max(0, dragStart.current + g.dy)));
+        },
+        onPanResponderRelease: (_, g) => {
+          const pos = dragStart.current + g.dy;
+          if (g.vy < -0.5) snapSheet(true);
+          else if (g.vy > 0.5) snapSheet(false);
+          else snapSheet(pos < collapsedY / 2);
+        },
+        onPanResponderTerminate: () => snapSheet(false),
+      }),
+    [sheetY, collapsedY, snapSheet]
+  );
+
+  // Selecting something collapses the sheet so the pin stays visible
+  useEffect(() => {
+    if (selectedMarker) snapSheet(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMarker?.id]);
+
+  // ---------- Actions ----------
+  const handleLocateMe = async () => {
+    setShowLayers(false);
+    setIsLocating(true);
+    try {
+      const coords = await getCurrentCoords();
+      setUserLocation(coords);
+      if (mapReady) callMap('showMe', coords.latitude, coords.longitude);
+    } catch (err) {
+      Alert.alert('Location unavailable', err.message || 'Could not get your location.');
+    } finally {
+      setIsLocating(false);
+    }
+  };
+
+  const handleDirections = (lat, lon) => {
+    Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`);
+  };
+
+  const handleFilterPress = (key) => {
+    setSelectedFilter(key);
+    setSelectedMarker(null);
+    setShowLayers(false);
+  };
+
+  const retryMap = () => {
+    setMapError(false);
+    setMapReady(false);
+    if (Platform.OS === 'web') {
+      if (iframeRef.current) iframeRef.current.srcdoc = mapHtml;
+    } else {
+      webViewRef.current?.reload();
+    }
+  };
+
+  const controlsBottom = bottomOffset + SHEET_MIN + spacing.md;
+
+  // ---------- Render helpers ----------
+  const renderListItem = (m, idx) => {
+    const meta = TYPE_META[typeOf(m)];
+    const isLast = idx === filteredMarkers.length - 1;
+    return (
+      <TouchableOpacity
+        key={m.id}
+        style={[styles.listItem, !isLast && styles.listItemDivider]}
+        onPress={() => setSelectedMarker(m)}
+        activeOpacity={0.7}
+      >
+        <View style={[styles.listIcon, { backgroundColor: meta.tint }]}>
+          <Ionicons name={meta.icon} size={17} color={meta.color} />
+        </View>
+        <View style={styles.listTextCol}>
+          <Text style={styles.listTitle} numberOfLines={1}>
+            {m.title || m.name}
+          </Text>
+          <Text style={styles.listSub} numberOfLines={1}>
+            {m.address}
+          </Text>
+        </View>
+        {m.distance != null ? <Text style={styles.listDistance}>{formatKm(m.distance)}</Text> : null}
+        <Ionicons name="chevron-forward" size={16} color={colors.placeholder} />
+      </TouchableOpacity>
     );
+  };
 
-    return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <style>
-    html, body, #map { width: 100%; height: 100%; margin: 0; padding: 0; background: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    .hub-pin {
-      background: #166534;
-      color: white;
-      border: 2px solid white;
-      border-radius: 50%;
-      width: 30px;
-      height: 30px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 15px;
-      box-shadow: 0 3px 10px rgba(0,0,0,0.35);
-    }
-    .dump-pin {
-      background: #DC2626;
-      color: white;
-      border: 2px solid white;
-      border-radius: 50%;
-      width: 30px;
-      height: 30px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 15px;
-      box-shadow: 0 3px 10px rgba(0,0,0,0.35);
-    }
-    .user-pin {
-      background: #D97706;
-      color: white;
-      border: 2px solid white;
-      border-radius: 50%;
-      width: 30px;
-      height: 30px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 15px;
-      box-shadow: 0 3px 10px rgba(0,0,0,0.35);
-    }
-    .leaflet-popup-content-wrapper {
-      border-radius: 12px;
-      padding: 4px;
-      box-shadow: 0 6px 20px rgba(0,0,0,0.18);
-    }
-    .popup-content { padding: 4px; max-width: 220px; }
-    .popup-title { font-weight: 700; font-size: 13px; color: #111827; margin-bottom: 3px; }
-    .popup-badge {
-      display: inline-block;
-      font-size: 10px;
-      font-weight: 700;
-      padding: 2px 6px;
-      border-radius: 999px;
-      margin-bottom: 5px;
-    }
-    .badge-ngo { background: #DCFCE7; color: #166534; }
-    .badge-dump { background: #FEE2E2; color: #DC2626; }
-    .badge-user { background: #FEF3C7; color: #B45309; }
-    .popup-addr { font-size: 11px; color: #4B5563; line-height: 1.3; margin-bottom: 6px; }
-    .popup-streams { font-size: 10px; color: #065F46; font-weight: 600; margin-bottom: 6px; }
-    .popup-btn {
-      display: block;
-      width: 100%;
-      box-sizing: border-box;
-      text-align: center;
-      background: #166534;
-      color: white;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 6px 8px;
-      border-radius: 6px;
-      border: none;
-      cursor: pointer;
-    }
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <script>
-    const markers = ${markersJson};
-    const centerLat = ${activeLocation.latitude};
-    const centerLng = ${activeLocation.longitude};
-    const zoom = ${zoomLevel};
+  const renderEmpty = () => (
+    <View style={styles.emptyBox}>
+      <Ionicons
+        name={selectedFilter === 'My Reports' ? 'document-text-outline' : 'search-outline'}
+        size={26}
+        color={colors.placeholder}
+      />
+      <Text style={styles.emptyTitle}>
+        {searchQuery
+          ? 'No places match your search'
+          : selectedFilter === 'My Reports'
+          ? "You haven't reported any dumps yet"
+          : 'Nothing here yet'}
+      </Text>
+      {selectedFilter === 'My Reports' && !searchQuery ? (
+        <TouchableOpacity style={styles.emptyBtn} onPress={() => navigation.navigate('ReportDumpScreen')}>
+          <Text style={styles.emptyBtnText}>Report a dump</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
 
-    const map = L.map('map', { zoomControl: false }).setView([centerLat, centerLng], zoom);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '© OpenStreetMap'
-    }).addTo(map);
+  const renderSelected = (m) => {
+    const meta = TYPE_META[typeOf(m)];
+    const dist = userLocation ? distanceKm(userLocation, m) : null;
+    return (
+      <>
+        <View style={styles.selHeaderRow}>
+          <View style={[styles.typePill, { backgroundColor: meta.tint }]}>
+            <Ionicons name={meta.icon} size={11} color={meta.color} style={{ marginRight: 4 }} />
+            <Text style={[styles.typePillText, { color: meta.color }]}>{meta.label}</Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => setSelectedMarker(null)}
+            style={styles.selCloseBtn}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name="close" size={18} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
 
-    const latLngs = [];
+        <Text style={styles.selTitle} numberOfLines={2}>
+          {m.title || m.name}
+        </Text>
+        <Text style={styles.selAddress} numberOfLines={sheetExpanded ? undefined : 1}>
+          {m.fullAddress || m.address}
+        </Text>
+        <Text style={styles.selMeta} numberOfLines={1}>
+          {[dist != null ? formatKm(dist) + ' away' : null, m.isNgo ? m.timings : m.date]
+            .filter(Boolean)
+            .join('  ·  ')}
+        </Text>
 
-    markers.forEach(m => {
-      if (!m.lat || !m.lng) return;
-      latLngs.push([m.lat, m.lng]);
+        <View style={styles.selActions}>
+          <TouchableOpacity
+            style={styles.primaryBtn}
+            onPress={() => handleDirections(m.latitude, m.longitude)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="navigate" size={15} color={colors.white} style={{ marginRight: 6 }} />
+            <Text style={styles.primaryBtnText}>Directions</Text>
+          </TouchableOpacity>
+          {m.phone ? (
+            <TouchableOpacity style={styles.outlineBtn} onPress={() => Linking.openURL(`tel:${m.phone}`)}>
+              <Ionicons name="call-outline" size={15} color={colors.primary800} />
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity style={styles.outlineBtn} onPress={() => snapSheet(!sheetExpanded)}>
+            <Ionicons
+              name={sheetExpanded ? 'chevron-down' : 'information-circle-outline'}
+              size={16}
+              color={colors.primary800}
+            />
+          </TouchableOpacity>
+        </View>
 
-      const pinClass = m.isNgo ? 'hub-pin' : m.isMyReport ? 'user-pin' : 'dump-pin';
-      const pinIcon = m.isNgo ? '🏢' : m.isMyReport ? '🌟' : '🚨';
+        {/* Full details, revealed when the sheet is swiped up */}
+        <View style={styles.detailBlock}>
+          {m.photoUri ? (
+            <Image source={{ uri: m.photoUri }} style={styles.detailPhoto} resizeMode="cover" resizeMethod="resize" />
+          ) : null}
 
-      const customIcon = L.divIcon({
-        className: 'custom-marker-icon',
-        html: '<div class="' + pinClass + '">' + pinIcon + '</div>',
-        iconSize: [30, 30],
-        iconAnchor: [15, 15],
-        popupAnchor: [0, -15]
-      });
+          {m.isNgo && Array.isArray(m.streams) && m.streams.length > 0 ? (
+            <View style={styles.detailSection}>
+              <Text style={styles.detailLabel}>Accepts</Text>
+              <View style={styles.chipWrap}>
+                {m.streams.map((st, idx) => (
+                  <View key={idx} style={styles.streamChip}>
+                    <Text style={styles.streamChipText}>{st}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          ) : null}
 
-      const badgeClass = m.isNgo ? 'badge-ngo' : m.isMyReport ? 'badge-user' : 'badge-dump';
-      const badgeText = m.isNgo ? 'RECOVERY HUB' : m.isMyReport ? 'YOUR REPORT' : 'DUMP REPORT';
+          {!m.isNgo && (m.severity || m.status) ? (
+            <View style={styles.detailSection}>
+              <Text style={styles.detailLabel}>Status</Text>
+              <Text style={[styles.detailValue, { color: m.statusColor || colors.textPrimary }]}>
+                {[m.status, m.severity].filter(Boolean).join('  ·  ')}
+              </Text>
+            </View>
+          ) : null}
 
-      const streamsHtml = (m.streams && m.streams.length > 0)
-        ? '<div class="popup-streams">Accepts: ' + m.streams.slice(0, 3).join(', ') + (m.streams.length > 3 ? ' +' + (m.streams.length - 3) + ' more' : '') + '</div>'
-        : '';
+          {m.guidelines || m.notes ? (
+            <View style={styles.detailSection}>
+              <Text style={styles.detailLabel}>{m.isNgo ? 'Drop-off guidelines' : 'Notes'}</Text>
+              <Text style={styles.detailValue}>{m.guidelines || m.notes}</Text>
+            </View>
+          ) : null}
 
-      const popupHtml = '<div class="popup-content">' +
-        '<div class="popup-title">' + m.title + '</div>' +
-        '<div class="popup-badge ' + badgeClass + '">' + badgeText + '</div>' +
-        '<div class="popup-addr">' + (m.address || '') + '</div>' +
-        streamsHtml +
-        '<button class="popup-btn" onclick="selectMarker(\\'' + m.id + '\\')">Select & View Details</button>' +
-        '</div>';
+          {m.authority ? (
+            <View style={styles.detailSection}>
+              <Text style={styles.detailLabel}>Assigned authority</Text>
+              <Text style={styles.detailValue}>{m.authority}</Text>
+            </View>
+          ) : null}
 
-      const marker = L.marker([m.lat, m.lng], { icon: customIcon }).addTo(map);
-      marker.bindPopup(popupHtml);
-
-      marker.on('click', () => {
-        selectMarker(m.id);
-      });
-    });
-
-    function selectMarker(id) {
-      if (window.parent) {
-        window.parent.postMessage({ type: 'SELECT_MARKER', markerId: id }, '*');
-      }
-    }
-
-    if (latLngs.length > 1 && ${selectedFilter === 'All' ? 'true' : 'false'}) {
-      map.fitBounds(latLngs, { padding: [30, 30] });
-    }
-  </script>
-</body>
-</html>`;
+          {m.isNgo ? (
+            <TouchableOpacity
+              style={styles.linkRow}
+              onPress={() => navigation.navigate('NgoTab', { focusHubId: m.id })}
+            >
+              <Text style={styles.linkRowText}>Open in Recycling Centres</Text>
+              <Ionicons name="arrow-forward" size={15} color={colors.primary700} />
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </>
+    );
   };
 
   return (
-    <SafeAreaView style={[globalStyles.safeArea, styles.safeAreaOverride]} edges={['top', 'left', 'right']}>
-      <View style={styles.webWrapper}>
-        <View style={styles.maxContainer}>
-          {/* Header */}
-          <View style={styles.header}>
-            <View style={styles.headerLeftRow}>
-              <TouchableOpacity
-                onPress={() => {
-                  if (navigation.canGoBack()) {
-                    navigation.goBack();
-                  } else {
-                    navigation.navigate('HomeTab');
-                  }
-                }}
-                style={styles.backBtn}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Ionicons name="arrow-back" size={24} color={colors.primary800} />
-              </TouchableOpacity>
-              <View style={{ marginLeft: 8, flex: 1 }}>
-                <Text style={styles.headerTitle}>Waste & Hub Map</Text>
-                <Text style={styles.headerSubtitle} numberOfLines={1}>Real-time Google Maps locator for reported dumps and recovery hubs</Text>
-              </View>
-            </View>
-            <TouchableOpacity
-              style={styles.addReportBtn}
-              onPress={() => navigation.navigate('ReportDumpScreen')}
-            >
-              <Ionicons name="add" size={16} color={colors.white} style={{ marginRight: 4 }} />
-              <Text style={styles.addReportBtnText}>Report Dump</Text>
-            </TouchableOpacity>
-          </View>
+    <View style={styles.root}>
+      <View style={styles.maxContainer}>
+        {/* Map fills the whole screen */}
+        <View style={StyleSheet.absoluteFill}>
+          {Platform.OS === 'web' ? (
+            <iframe
+              ref={iframeRef}
+              title="Recycling centres and dump reports map"
+              srcDoc={mapHtml}
+              style={{ width: '100%', height: '100%', border: 'none' }}
+            />
+          ) : (
+            <WebView
+              ref={webViewRef}
+              style={styles.map}
+              originWhitelist={['*']}
+              source={nativeSource}
+              onMessage={onWebViewMessage}
+              onError={() => setMapError(true)}
+              javaScriptEnabled
+              domStorageEnabled
+              setSupportMultipleWindows={false}
+            />
+          )}
 
-          {/* Search Bar for 15+ Hubs & Dumps */}
-          <View style={styles.searchContainer}>
-            <Ionicons name="search-outline" size={17} color={colors.primary600} style={styles.searchIcon} />
+          {!mapReady || mapError ? (
+            <View style={styles.mapOverlay}>
+              {mapError ? (
+                <>
+                  <Ionicons name="cloud-offline-outline" size={28} color={colors.textSecondary} />
+                  <Text style={styles.mapOverlayText}>Map couldn't load. Check your internet.</Text>
+                  <TouchableOpacity style={styles.emptyBtn} onPress={retryMap}>
+                    <Text style={styles.emptyBtnText}>Try again</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <ActivityIndicator size="small" color={colors.primary600} />
+              )}
+            </View>
+          ) : null}
+        </View>
+
+        {/* Floating search + filters */}
+        <View style={[styles.topOverlay, { paddingTop: insets.top + spacing.sm }]} pointerEvents="box-none">
+          <View style={styles.searchCard}>
+            {!inTabs && navigation.canGoBack() ? (
+              <TouchableOpacity
+                onPress={() => navigation.goBack()}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={styles.searchLeadBtn}
+              >
+                <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
+              </TouchableOpacity>
+            ) : (
+              <Ionicons name="search" size={18} color={colors.textSecondary} style={styles.searchLeadIcon} />
+            )}
             <TextInput
-              placeholder="Search 15+ hubs, dumps, streams (plastic, Goregaon)..."
+              placeholder="Search centres, dumps or materials"
               placeholderTextColor={colors.placeholder}
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -441,1229 +705,301 @@ export default function MapScreen({ navigation, route }) {
               returnKeyType="search"
             />
             {searchQuery ? (
-              <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.searchClearBtn}>
-                <Ionicons name="close-circle" size={18} color={colors.primary600} />
+              <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="close-circle" size={18} color={colors.placeholder} />
               </TouchableOpacity>
             ) : null}
           </View>
 
-          {/* Primary Quick-Filter Tabs */}
-          <View style={styles.primaryTabBar}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.primaryTabScroll}>
-              <TouchableOpacity
-                style={[styles.primaryTab, selectedFilter === 'NGOs' && styles.primaryTabActiveNgo]}
-                onPress={() => {
-                  setSelectedFilter('NGOs');
-                  if (ngoCenters.length > 0) handleSelectMarker(ngoCenters[0]);
-                }}
-              >
-                <Ionicons
-                  name="business"
-                  size={14}
-                  color={selectedFilter === 'NGOs' ? colors.white : '#166534'}
-                  style={{ marginRight: 5 }}
-                />
-                <Text style={[styles.primaryTabText, selectedFilter === 'NGOs' && styles.primaryTabTextActive]}>
-                  🏢 NGOs ({ngoCenters.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.primaryTab, selectedFilter === 'My Reports' && styles.primaryTabActiveUser]}
-                onPress={() => {
-                  setSelectedFilter('My Reports');
-                  if (myReports.length > 0) handleSelectMarker(myReports[0]);
-                }}
-              >
-                <Ionicons
-                  name="person"
-                  size={14}
-                  color={selectedFilter === 'My Reports' ? colors.white : colors.primary800}
-                  style={{ marginRight: 5 }}
-                />
-                <Text style={[styles.primaryTabText, selectedFilter === 'My Reports' && styles.primaryTabTextActive]}>
-                  🌟 Reported by Me ({myReports.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.primaryTab, selectedFilter === 'Trash Dumps' && styles.primaryTabActiveDump]}
-                onPress={() => {
-                  setSelectedFilter('Trash Dumps');
-                  if (dumpMarkers.length > 0) handleSelectMarker(dumpMarkers[0]);
-                }}
-              >
-                <Ionicons
-                  name="warning"
-                  size={14}
-                  color={selectedFilter === 'Trash Dumps' ? colors.white : '#DC2626'}
-                  style={{ marginRight: 5 }}
-                />
-                <Text style={[styles.primaryTabText, selectedFilter === 'Trash Dumps' && styles.primaryTabTextActive]}>
-                  🚨 All Dumps ({dumpMarkers.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.primaryTab, selectedFilter === 'All' && styles.primaryTabActiveAll]}
-                onPress={() => setSelectedFilter('All')}
-              >
-                <Ionicons
-                  name="globe-outline"
-                  size={14}
-                  color={selectedFilter === 'All' ? colors.white : colors.primary800}
-                  style={{ marginRight: 5 }}
-                />
-                <Text style={[styles.primaryTabText, selectedFilter === 'All' && styles.primaryTabTextActive]}>
-                  All Locations ({allMarkers.length})
-                </Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-
-          {/* Map Toolbar: All Pins / Street / Satellite, GPS, and Zoom */}
-          <View style={styles.toolbar}>
-            {/* View Mode Toggle */}
-            <View style={styles.modeToggleGroup}>
-              <TouchableOpacity
-                style={[styles.modeBtn, mapMode === 'pins' && styles.modeBtnActive]}
-                onPress={() => setMapMode('pins')}
-              >
-                <Ionicons
-                  name="pin"
-                  size={13}
-                  color={mapMode === 'pins' ? colors.white : colors.primary800}
-                  style={{ marginRight: 4 }}
-                />
-                <Text style={[styles.modeBtnText, mapMode === 'pins' && styles.modeBtnTextActive]}>
-                  All Pins
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.modeBtn, mapMode === 'm' && styles.modeBtnActive]}
-                onPress={() => setMapMode('m')}
-              >
-                <Ionicons
-                  name="map-outline"
-                  size={13}
-                  color={mapMode === 'm' ? colors.white : colors.primary800}
-                  style={{ marginRight: 4 }}
-                />
-                <Text style={[styles.modeBtnText, mapMode === 'm' && styles.modeBtnTextActive]}>
-                  Street
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.modeBtn, mapMode === 'k' && styles.modeBtnActive]}
-                onPress={() => setMapMode('k')}
-              >
-                <Ionicons
-                  name="planet-outline"
-                  size={13}
-                  color={mapMode === 'k' ? colors.white : colors.primary800}
-                  style={{ marginRight: 4 }}
-                />
-                <Text style={[styles.modeBtnText, mapMode === 'k' && styles.modeBtnTextActive]}>
-                  Satellite
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* GPS Locator */}
-            <TouchableOpacity
-              style={[styles.gpsBtn, isLocating && styles.gpsBtnLoading]}
-              onPress={handleLocateMe}
-              disabled={isLocating}
-            >
-              <Ionicons
-                name={isLocating ? 'sync-outline' : 'navigate'}
-                size={13}
-                color={colors.primary800}
-                style={{ marginRight: 5 }}
-              />
-              <Text style={styles.gpsBtnText}>
-                {isLocating ? 'Locating...' : 'Locate Me'}
-              </Text>
-            </TouchableOpacity>
-
-            {/* Zoom Controls */}
-            <View style={styles.zoomGroup}>
-              <TouchableOpacity
-                style={styles.zoomBtn}
-                onPress={() => setZoomLevel((z) => Math.min(19, z + 1))}
-              >
-                <Ionicons name="add" size={15} color={colors.primary800} />
-              </TouchableOpacity>
-              <View style={styles.zoomDivider} />
-              <TouchableOpacity
-                style={styles.zoomBtn}
-                onPress={() => setZoomLevel((z) => Math.max(12, z - 1))}
-              >
-                <Ionicons name="remove" size={15} color={colors.primary800} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Interactive Multi-Pin Map / Google Maps Embed Container */}
-          <View style={styles.mapContainer}>
-            {Platform.OS === 'web' ? (
-              mapMode === 'pins' ? (
-                <iframe
-                  title="Interactive Multi-Pin Community Waste & Hub Map"
-                  srcDoc={generateLeafletHtml()}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    border: 'none',
-                  }}
-                  loading="lazy"
-                />
-              ) : (
-                <iframe
-                  title="Google Maps Waste & Hub Locator"
-                  src={googleMapsEmbedUrl}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    border: 'none',
-                  }}
-                  loading="lazy"
-                  allowFullScreen
-                />
-              )
-            ) : (
-              <View style={styles.nativeMapPlaceholder}>
-                <Ionicons name="map" size={48} color={colors.primary800} />
-                <Text style={styles.nativeMapText}>{activeLocation.title}</Text>
-                <Text style={styles.nativeMapSub}>
-                  Lat: {activeLocation.latitude.toFixed(4)}, Lon: {activeLocation.longitude.toFixed(4)}
-                </Text>
-                <TouchableOpacity
-                  style={styles.openGoogleMapsBtn}
-                  onPress={() => handleDirections(activeLocation.latitude, activeLocation.longitude)}
-                >
-                  <Ionicons name="open-outline" size={16} color={colors.white} style={{ marginRight: 6 }} />
-                  <Text style={styles.openGoogleMapsBtnText}>Open in Google Maps App</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Active Pin Overlay Tag */}
-            <View style={styles.activeLocationBadge}>
-              <Ionicons
-                name={selectedMarker?.isNgo ? 'business' : selectedMarker?.isMyReport ? 'person' : 'location'}
-                size={14}
-                color={selectedMarker?.isNgo ? '#166534' : selectedMarker?.isMyReport ? '#B45309' : '#DC2626'}
-                style={{ marginRight: 4 }}
-              />
-              <Text style={styles.activeLocationText} numberOfLines={1}>
-                {activeLocation.title} ({activeLocation.latitude.toFixed(3)}, {activeLocation.longitude.toFixed(3)})
-              </Text>
-            </View>
-          </View>
-
-          {/* Filtered Location Quick-Pills Bar */}
-          <View style={styles.filterBar}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-              {filteredMarkers.map((marker) => {
-                const isSelected = selectedMarker?.id === marker.id;
-                return (
-                  <TouchableOpacity
-                    key={marker.id}
-                    style={[
-                      styles.locationPill,
-                      marker.isMyReport && styles.locationPillMyReport,
-                      marker.isNgo && styles.locationPillNgo,
-                      marker.isDump && !marker.isMyReport && styles.locationPillDump,
-                      isSelected && styles.locationPillActive,
-                    ]}
-                    onPress={() => handleSelectMarker(marker)}
-                  >
-                    <Ionicons
-                      name={marker.isNgo ? 'business' : marker.isMyReport ? 'person' : 'warning'}
-                      size={13}
-                      color={
-                        isSelected
-                          ? colors.white
-                          : marker.isNgo
-                          ? '#166534'
-                          : marker.isMyReport
-                          ? '#B45309'
-                          : '#DC2626'
-                      }
-                      style={{ marginRight: 5 }}
-                    />
-                    <Text
-                      style={[
-                        styles.locationPillText,
-                        isSelected && styles.locationPillTextActive,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {marker.shortName || marker.title}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-
-          {/* Bottom Area: Detail Cards & Lists */}
           <ScrollView
-            style={styles.bottomArea}
-            contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + 85, 110) }}
-            showsVerticalScrollIndicator={false}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chipRow}
+            keyboardShouldPersistTaps="handled"
           >
-            {/* 1. SELECTED MARKER DETAIL CARD */}
-            {selectedMarker ? (
-              <View style={styles.detailCard}>
-                <View style={styles.detailHeader}>
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.tagRow}>
-                      <View
-                        style={[
-                          styles.markerTypeBadge,
-                          {
-                            backgroundColor: selectedMarker.isNgo
-                              ? '#166534'
-                              : selectedMarker.isMyReport
-                              ? '#FEF3C7'
-                              : selectedMarker.isGps
-                              ? '#E0F2FE'
-                              : '#FEE2E2',
-                          },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.markerTypeBadgeText,
-                            {
-                              color: selectedMarker.isNgo
-                                ? '#ffffff'
-                                : selectedMarker.isMyReport
-                                ? '#B45309'
-                                : selectedMarker.isGps
-                                ? '#0369A1'
-                                : '#DC2626',
-                            },
-                          ]}
-                        >
-                          {selectedMarker.isNgo
-                            ? 'NGO'
-                            : selectedMarker.isMyReport
-                            ? 'REPORTED BY YOU'
-                            : selectedMarker.isGps
-                            ? 'CURRENT LOCATION'
-                            : 'COMMUNITY REPORT'}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={styles.markerTitle}>{selectedMarker.title}</Text>
-                    <Text style={styles.markerAddress}>{selectedMarker.address}</Text>
-                  </View>
-
-                  <TouchableOpacity onPress={() => setSelectedMarker(null)} style={styles.closeCalloutBtn}>
-                    <Ionicons name="close" size={20} color={colors.primary600} />
-                  </TouchableOpacity>
-                </View>
-
-                {/* Accepted Streams for NGOs */}
-                {selectedMarker.isNgo && selectedMarker.streams && (
-                  <View style={styles.ngoStreamsBox}>
-                    <Text style={styles.ngoStreamsTitle}>Accepted Streams:</Text>
-                    <View style={styles.ngoStreamPills}>
-                      {selectedMarker.streams.map((st, idx) => (
-                        <View key={idx} style={styles.ngoStreamChip}>
-                          <Text style={styles.ngoStreamChipText}>{st}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
-
-                {/* Photo Evidence (for dumps) */}
-                {selectedMarker.photoUri && (
-                  <View style={styles.photoContainer}>
-                    <Image
-                      source={{ uri: selectedMarker.photoUri }}
-                      style={styles.detailPhoto}
-                      resizeMode="cover"
-                    />
-                    <View style={styles.photoBadge}>
-                      <Text style={styles.photoBadgeText}>Photo Proof</Text>
-                    </View>
-                  </View>
-                )}
-
-                {/* Citizen observation notes (only if provided by user) */}
-                {selectedMarker.notes && !selectedMarker.isNgo ? (
-                  <View style={styles.notesBox}>
-                    <Text style={styles.notesLabel}>Observation Notes:</Text>
-                    <Text style={styles.notesText}>{selectedMarker.notes}</Text>
-                  </View>
-                ) : null}
-
-                {/* Detail Card Action Footer */}
-                <View style={styles.detailFooter}>
-                  <View style={{ flex: 1, marginRight: 8 }}>
-                    <Text style={styles.statusLabel}>Status:</Text>
-                    <Text style={[styles.statusVal, { color: selectedMarker.statusColor || '#166534' }]}>
-                      {selectedMarker.status}
-                    </Text>
-                  </View>
-
-                  <View style={styles.detailActionButtons}>
-                    <TouchableOpacity
-                      style={styles.directionsBtn}
-                      onPress={() => handleDirections(selectedMarker.latitude, selectedMarker.longitude)}
-                    >
-                      <Ionicons name="navigate" size={13} color={colors.white} style={{ marginRight: 4 }} />
-                      <Text style={styles.directionsBtnText}>Directions</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.ngoDirLinkBtn}
-                      onPress={() => setDetailsModalItem(selectedMarker)}
-                    >
-                      <Ionicons name="information-circle-outline" size={14} color={colors.primary800} style={{ marginRight: 4 }} />
-                      <Text style={styles.ngoDirLinkBtnText}>Show Details</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            ) : null}
-
-            {/* 2. DEDICATED "REPORTED BY ME" LIST VIEW */}
-            {(selectedFilter === 'My Reports' || selectedFilter === 'All') && (
-              <View style={styles.sectionContainer}>
-                <View style={styles.sectionHeaderRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Ionicons name="person" size={16} color={colors.primary800} style={{ marginRight: 6 }} />
-                    <Text style={styles.sectionHeading}>Dumps Reported by You</Text>
-                  </View>
-                  <View style={styles.sectionCountBadge}>
-                    <Text style={styles.sectionCountText}>{myReports.length} Dumps</Text>
-                  </View>
-                </View>
-
-                {myReports.length === 0 ? (
-                  <View style={styles.emptyPrompt}>
-                    <Ionicons name="document-text-outline" size={30} color={colors.primary800} />
-                    <Text style={styles.emptyPromptTitle}>No Dumps Reported by You</Text>
-                    <Text style={styles.emptyPromptSub}>
-                      Notice uncollected garbage in your area? Upload a photo to alert municipal authorities.
-                    </Text>
-                    <TouchableOpacity
-                      style={styles.emptyReportBtn}
-                      onPress={() => navigation.navigate('ReportDumpScreen')}
-                    >
-                      <Ionicons name="add-circle" size={16} color={colors.white} style={{ marginRight: 6 }} />
-                      <Text style={styles.emptyReportBtnText}>Report a Trash Dump</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  myReports.map((dump) => (
-                    <View key={dump.id} style={styles.myDumpCard}>
-                      <View style={styles.myDumpTopRow}>
-                        <View style={{ flex: 1, marginRight: 10 }}>
-                          <View style={styles.myDumpBadgeRow}>
-                            <View style={[styles.statusPill, { backgroundColor: (dump.statusColor || '#DC2626') + '20' }]}>
-                              <View style={[styles.statusDot, { backgroundColor: dump.statusColor || '#DC2626' }]} />
-                              <Text style={[styles.statusPillText, { color: dump.statusColor || '#DC2626' }]}>
-                                {dump.status}
-                              </Text>
-                            </View>
-                            <Text style={styles.myDumpTime}>{dump.date}</Text>
-                          </View>
-                          <Text style={styles.myDumpTitle}>{dump.title}</Text>
-                          <Text style={styles.myDumpAddress} numberOfLines={2}>{dump.address}</Text>
-                        </View>
-                        {dump.photoUri && (
-                          <Image source={{ uri: dump.photoUri }} style={styles.myDumpThumb} />
-                        )}
-                      </View>
-
-                      {dump.notes ? (
-                        <Text style={styles.myDumpNotes} numberOfLines={2}>
-                          "{dump.notes}"
-                        </Text>
-                      ) : null}
-
-                      <View style={styles.myDumpActions}>
-                        <TouchableOpacity
-                          style={styles.myDumpMapBtn}
-                          onPress={() => handleSelectMarker(dump)}
-                        >
-                          <Ionicons name="locate" size={13} color={colors.primary800} style={{ marginRight: 4 }} />
-                          <Text style={styles.myDumpMapBtnText}>Center on Map</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={styles.ngoDirLinkBtn}
-                          onPress={() => setDetailsModalItem(dump)}
-                        >
-                          <Ionicons name="document-text-outline" size={13} color={colors.primary800} style={{ marginRight: 4 }} />
-                          <Text style={styles.ngoDirLinkBtnText}>Show Details</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={styles.myDumpDirBtn}
-                          onPress={() => handleDirections(dump.latitude, dump.longitude)}
-                        >
-                          <Ionicons name="navigate" size={13} color={colors.white} style={{ marginRight: 4 }} />
-                          <Text style={styles.myDumpDirBtnText}>Directions</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  ))
-                )}
-              </View>
-            )}
-
-            {/* 3. DEDICATED "NGOS" LIST VIEW */}
-            {(selectedFilter === 'NGOs' || selectedFilter === 'All') && (
-              <View style={styles.sectionContainer}>
-                <View style={styles.sectionHeaderRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Ionicons name="business" size={16} color="#166534" style={{ marginRight: 6 }} />
-                    <Text style={styles.sectionHeading}>Recovery Hubs (NGOs)</Text>
-                  </View>
-                  <View style={[styles.sectionCountBadge, { backgroundColor: '#DCFCE7' }]}>
-                    <Text style={[styles.sectionCountText, { color: '#166534' }]}>{ngoCenters.length} Hubs</Text>
-                  </View>
-                </View>
-
-                {ngoCenters.map((ngo) => (
-                  <View key={ngo.id} style={styles.ngoCard}>
-                    <View style={styles.ngoCardHeader}>
-                      <Text style={styles.ngoName}>{ngo.title}</Text>
-                      <View style={styles.ngoBadge}>
-                        <Text style={styles.ngoBadgeText}>{ngo.type}</Text>
-                      </View>
-                    </View>
-                    <Text style={styles.ngoAddress}>{ngo.address}</Text>
-
-                    <Text style={styles.ngoStreamsSub}>Accepted Streams:</Text>
-                    <View style={styles.ngoStreamPills}>
-                      {ngo.streams.map((st, idx) => (
-                        <View key={idx} style={styles.streamPill}>
-                          <Text style={styles.streamPillText}>{st}</Text>
-                        </View>
-                      ))}
-                    </View>
-
-                    <View style={styles.ngoCardActions}>
-                      <TouchableOpacity
-                        style={styles.myDumpMapBtn}
-                        onPress={() => handleSelectMarker(ngo)}
-                      >
-                        <Ionicons name="locate" size={13} color={colors.primary800} style={{ marginRight: 4 }} />
-                        <Text style={styles.myDumpMapBtnText}>Center on Map</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.ngoDirLinkBtn}
-                        onPress={() => setDetailsModalItem(ngo)}
-                      >
-                        <Ionicons name="information-circle-outline" size={14} color={colors.primary800} style={{ marginRight: 4 }} />
-                        <Text style={styles.ngoDirLinkBtnText}>Show Details</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.myDumpDirBtn}
-                        onPress={() => handleDirections(ngo.latitude, ngo.longitude)}
-                      >
-                        <Ionicons name="navigate" size={13} color={colors.white} style={{ marginRight: 4 }} />
-                        <Text style={styles.myDumpDirBtnText}>Directions</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Extra bottom padding */}
-            <View style={{ height: 40 }} />
+            {FILTERS.map((f) => {
+              const active = selectedFilter === f.key;
+              return (
+                <TouchableOpacity
+                  key={f.key}
+                  style={[styles.filterChip, active && styles.filterChipActive]}
+                  onPress={() => handleFilterPress(f.key)}
+                  activeOpacity={0.8}
+                >
+                  {f.color ? (
+                    <View style={[styles.filterDot, { backgroundColor: active ? colors.white : f.color }]} />
+                  ) : null}
+                  <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{f.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
           </ScrollView>
         </View>
-      </View>
 
-      {/* SHOW DETAILS MODAL SHEET */}
-      {detailsModalItem && (
-        <Modal visible={!!detailsModalItem} transparent animationType="slide">
-          <View style={styles.modalBackdrop}>
-            <View style={[styles.modalSheet, { paddingBottom: Math.max(insets.bottom + 16, 24) }]}>
-              {/* Native Bottom Sheet Drag Handle */}
-              <View style={styles.modalDragHandle} />
+        {/* Floating map controls */}
+        <TouchableOpacity
+          style={[styles.reportFab, { bottom: controlsBottom }]}
+          onPress={() => navigation.navigate('ReportDumpScreen')}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="add" size={20} color={colors.white} style={{ marginRight: 4 }} />
+          <Text style={styles.reportFabText}>Report dump</Text>
+        </TouchableOpacity>
 
-              {/* Modal Header */}
-              <View style={styles.modalHeader}>
-                <View style={{ flex: 1 }}>
-                  <View style={styles.tagRow}>
-                    <View
-                      style={[
-                        styles.markerTypeBadge,
-                        {
-                          backgroundColor: detailsModalItem.isNgo
-                            ? '#166534'
-                            : detailsModalItem.isMyReport
-                            ? '#FEF3C7'
-                            : '#FEE2E2',
-                        },
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.markerTypeBadgeText,
-                          {
-                            color: detailsModalItem.isNgo
-                              ? '#ffffff'
-                              : detailsModalItem.isMyReport
-                              ? '#B45309'
-                              : '#DC2626',
-                          },
-                        ]}
-                      >
-                        {detailsModalItem.isNgo
-                          ? 'NGO RECOVERY HUB'
-                          : detailsModalItem.isMyReport
-                          ? 'DUMP REPORTED BY YOU'
-                          : 'COMMUNITY DUMP REPORT'}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={styles.modalTitle}>{detailsModalItem.title}</Text>
-                  <Text style={styles.modalSubtitle}>
-                    {detailsModalItem.facilityType || detailsModalItem.wasteType || 'Civic Waste Location'}
-                  </Text>
-                </View>
-                <TouchableOpacity onPress={() => setDetailsModalItem(null)} style={styles.modalCloseBtn}>
-                  <Ionicons name="close-circle" size={28} color={colors.primary600} />
-                </TouchableOpacity>
-              </View>
+        <View style={[styles.controlsCol, { bottom: controlsBottom }]}>
+          <TouchableOpacity
+            style={[styles.roundBtn, showLayers && styles.roundBtnActive]}
+            onPress={() => setShowLayers((v) => !v)}
+          >
+            <Ionicons name="layers-outline" size={20} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.roundBtn} onPress={handleLocateMe} disabled={isLocating}>
+            {isLocating ? (
+              <ActivityIndicator size="small" color="#2563EB" />
+            ) : (
+              <Ionicons name={userLocation ? 'locate' : 'locate-outline'} size={20} color={userLocation ? '#2563EB' : colors.textPrimary} />
+            )}
+          </TouchableOpacity>
+        </View>
 
-              <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
-                {/* Meta Summary Row */}
-                <View style={styles.modalMetaCard}>
-                  <View style={styles.modalMetaCol}>
-                    <Text style={styles.modalMetaLabel}>Status</Text>
-                    <Text style={[styles.modalMetaVal, { color: detailsModalItem.statusColor || '#166534' }]}>
-                      {detailsModalItem.status}
-                    </Text>
-                  </View>
-                  {detailsModalItem.date && (
-                    <View style={styles.modalMetaCol}>
-                      <Text style={styles.modalMetaLabel}>Logged</Text>
-                      <Text style={styles.modalMetaVal}>{detailsModalItem.date}</Text>
-                    </View>
-                  )}
-                  {detailsModalItem.severity && (
-                    <View style={styles.modalMetaCol}>
-                      <Text style={styles.modalMetaLabel}>Severity</Text>
-                      <Text style={[styles.modalMetaVal, { color: detailsModalItem.severityLevel === 'critical' ? '#DC2626' : '#D97706' }]}>
-                        {detailsModalItem.severity}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* Photo Evidence (if dump report) */}
-                {detailsModalItem.photoUri && (
-                  <View style={styles.modalPhotoBox}>
-                    <Image source={{ uri: detailsModalItem.photoUri }} style={styles.modalPhoto} resizeMode="cover" />
-                    <View style={styles.modalPhotoTag}>
-                      <Text style={styles.modalPhotoTagText}>Reported Photo Proof</Text>
-                    </View>
-                  </View>
-                )}
-
-                {/* Full Physical Location Details */}
-                <View style={styles.modalSectionBox}>
-                  <View style={styles.modalSectionTitleRow}>
-                    <Ionicons name="location" size={16} color={colors.primary800} style={{ marginRight: 6 }} />
-                    <Text style={styles.modalSectionTitle}>Physical Location & GPS</Text>
-                  </View>
-                  <Text style={styles.modalSectionContent}>
-                    {detailsModalItem.fullAddress || detailsModalItem.address}
-                  </Text>
-                  <Text style={styles.modalCoordsText}>
-                    GPS: {detailsModalItem.latitude.toFixed(5)}° N, {detailsModalItem.longitude.toFixed(5)}° E
-                  </Text>
-                </View>
-
-                {/* Operating Hours (for NGOs) */}
-                {detailsModalItem.isNgo && detailsModalItem.timings && (
-                  <View style={styles.modalSectionBox}>
-                    <View style={styles.modalSectionTitleRow}>
-                      <Ionicons name="time" size={16} color={colors.primary800} style={{ marginRight: 6 }} />
-                      <Text style={styles.modalSectionTitle}>Operating & Drop-off Hours</Text>
-                    </View>
-                    <Text style={styles.modalSectionContent}>{detailsModalItem.timings}</Text>
-                  </View>
-                )}
-
-                {/* Accepted Recyclable Streams (for NGOs) */}
-                {detailsModalItem.isNgo && detailsModalItem.streams && (
-                  <View style={styles.modalSectionBox}>
-                    <View style={styles.modalSectionTitleRow}>
-                      <Ionicons name="cube" size={16} color="#166534" style={{ marginRight: 6 }} />
-                      <Text style={styles.modalSectionTitle}>Accepted Material Streams ({detailsModalItem.streams.length})</Text>
-                    </View>
-                    <View style={styles.modalStreamGrid}>
-                      {detailsModalItem.streams.map((st, idx) => (
-                        <View key={idx} style={styles.modalStreamPill}>
-                          <Ionicons name="checkmark-circle" size={12} color="#166534" style={{ marginRight: 4 }} />
-                          <Text style={styles.modalStreamText}>{st}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
-
-                {/* Guidelines / Citizen Notes */}
-                {(detailsModalItem.guidelines || detailsModalItem.notes) && (
-                  <View style={styles.modalSectionBox}>
-                    <View style={styles.modalSectionTitleRow}>
-                      <Ionicons name="alert-circle" size={16} color={colors.primary800} style={{ marginRight: 6 }} />
-                      <Text style={styles.modalSectionTitle}>
-                        {detailsModalItem.isNgo ? 'Drop-off Guidelines' : 'Observation Notes'}
-                      </Text>
-                    </View>
-                    <Text style={styles.modalSectionContent}>
-                      {detailsModalItem.guidelines || detailsModalItem.notes}
-                    </Text>
-                  </View>
-                )}
-
-                {/* Official Municipal Authority (if dump) */}
-                {detailsModalItem.authority && (
-                  <View style={styles.modalSectionBox}>
-                    <View style={styles.modalSectionTitleRow}>
-                      <Ionicons name="shield-checkmark" size={16} color={colors.primary800} style={{ marginRight: 6 }} />
-                      <Text style={styles.modalSectionTitle}>Assigned Municipal Authority</Text>
-                    </View>
-                    <Text style={styles.modalSectionContent}>{detailsModalItem.authority}</Text>
-                  </View>
-                )}
-              </ScrollView>
-
-              {/* Modal Footer Action Buttons */}
-              <View style={styles.modalFooterActions}>
-                <TouchableOpacity
-                  style={styles.modalDirectionsBtn}
-                  onPress={() => handleDirections(detailsModalItem.latitude, detailsModalItem.longitude)}
-                >
-                  <Ionicons name="navigate" size={15} color={colors.white} style={{ marginRight: 6 }} />
-                  <Text style={styles.modalDirectionsBtnText}>Directions in Google Maps</Text>
-                </TouchableOpacity>
-
-                {detailsModalItem.isNgo && (
-                  <TouchableOpacity
-                    style={styles.modalDirectoryBtn}
-                    onPress={() => {
-                      setDetailsModalItem(null);
-                      navigation.navigate('NgoTab', { focusHubId: detailsModalItem.id });
-                    }}
-                  >
-                    <Ionicons name="list" size={15} color={colors.primary800} style={{ marginRight: 6 }} />
-                    <Text style={styles.modalDirectoryBtnText}>Open in Directory</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            </View>
+        {showLayers ? (
+          <View style={[styles.layersCard, { bottom: controlsBottom + FAB_SIZE + spacing.sm }]}>
+            {[
+              { key: 'street', label: 'Map', icon: 'map-outline' },
+              { key: 'satellite', label: 'Satellite', icon: 'earth-outline' },
+            ].map((opt) => (
+              <TouchableOpacity
+                key={opt.key}
+                style={styles.layerRow}
+                onPress={() => {
+                  setMapLayer(opt.key);
+                  setShowLayers(false);
+                }}
+              >
+                <Ionicons name={opt.icon} size={17} color={colors.textPrimary} style={{ marginRight: 10 }} />
+                <Text style={styles.layerRowText}>{opt.label}</Text>
+                {mapLayer === opt.key ? <Ionicons name="checkmark" size={17} color={colors.primary600} /> : null}
+              </TouchableOpacity>
+            ))}
           </View>
-        </Modal>
-      )}
-    </SafeAreaView>
+        ) : null}
+
+        {/* Swipe-up sheet */}
+        <Animated.View
+          style={[
+            styles.sheet,
+            { height: sheetMax, bottom: bottomOffset, transform: [{ translateY: sheetY }] },
+          ]}
+        >
+          <View {...panResponder.panHandlers}>
+            <TouchableOpacity activeOpacity={1} onPress={() => snapSheet(!sheetExpanded)} style={styles.handleHit}>
+              <View style={styles.handle} />
+            </TouchableOpacity>
+
+            {!selectedMarker ? (
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>{SHEET_TITLES[selectedFilter]}</Text>
+                <Text style={styles.sheetSub}>
+                  {filteredMarkers.length} {filteredMarkers.length === 1 ? 'place' : 'places'}
+                  {userLocation ? '  ·  nearest first' : ''}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          <ScrollView
+            style={styles.sheetScroll}
+            contentContainerStyle={styles.sheetScrollContent}
+            scrollEnabled={sheetExpanded}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {selectedMarker
+              ? renderSelected(selectedMarker)
+              : filteredMarkers.length === 0
+              ? renderEmpty()
+              : filteredMarkers.map(renderListItem)}
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </View>
   );
 }
 
+const shadow = {
+  shadowColor: '#000',
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.12,
+  shadowRadius: 8,
+  elevation: 4,
+};
+
 const styles = StyleSheet.create({
-  safeAreaOverride: { flex: 1, backgroundColor: '#ffffff' },
-  webWrapper: { flex: 1, alignItems: 'center', backgroundColor: Platform.OS === 'web' ? '#f3f6f3' : '#ffffff' },
-  maxContainer: { flex: 1, width: '100%', maxWidth: 600, backgroundColor: '#ffffff' },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: spacing.base,
-    paddingTop: Platform.OS === 'ios' ? spacing.xs : spacing.sm,
-    paddingBottom: spacing.xs,
-  },
-  headerLeftRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    marginRight: 8,
-  },
-  backBtn: {
-    padding: 6,
-    borderRadius: radius.full,
-    backgroundColor: colors.cardBg || '#f4f8f4',
-  },
-  headerTitle: { fontSize: 24, fontWeight: '800', color: colors.primary800, letterSpacing: -0.5 },
-  headerSubtitle: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-  addReportBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.primary800,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: radius.full,
-  },
-  addReportBtnText: { color: colors.white, fontSize: 12, fontWeight: '800' },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderRadius: radius.full,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 12,
-    marginHorizontal: spacing.base,
-    marginTop: spacing.xs,
-    marginBottom: spacing.xs,
-    height: 38,
-  },
-  searchIcon: {
-    marginRight: 6,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 12.5,
-    color: colors.textPrimary,
-    paddingVertical: 4,
-  },
-  searchClearBtn: {
-    padding: 4,
-  },
-  primaryTabBar: { marginVertical: spacing.xs },
-  primaryTabScroll: { paddingHorizontal: spacing.base, gap: 8 },
-  primaryTab: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: radius.full,
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  primaryTabActiveNgo: { backgroundColor: '#166534', borderColor: '#166534' },
-  primaryTabActiveUser: { backgroundColor: colors.primary800, borderColor: colors.primary800 },
-  primaryTabActiveDump: { backgroundColor: '#DC2626', borderColor: '#DC2626' },
-  primaryTabActiveAll: { backgroundColor: colors.primary800, borderColor: colors.primary800 },
-  primaryTabText: { fontSize: 11.5, fontWeight: '700', color: colors.textPrimary },
-  primaryTabTextActive: { color: colors.white },
-  toolbar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: spacing.base,
-    marginBottom: spacing.xs,
-  },
-  modeToggleGroup: {
-    flexDirection: 'row',
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderRadius: radius.full,
-    padding: 3,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  modeBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: radius.full,
-  },
-  modeBtnActive: { backgroundColor: colors.primary800 },
-  modeBtnText: { fontSize: 11, fontWeight: '700', color: colors.primary800 },
-  modeBtnTextActive: { color: colors.white },
-  gpsBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.primary50 || '#f0fdf4',
-    borderWidth: 1,
-    borderColor: colors.primary600,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: radius.full,
-  },
-  gpsBtnLoading: { opacity: 0.6 },
-  gpsBtnText: { fontSize: 11, fontWeight: '700', color: colors.primary800 },
-  zoomGroup: {
-    flexDirection: 'row',
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-  },
-  zoomBtn: { paddingHorizontal: 7, paddingVertical: 4 },
-  zoomDivider: { width: 1, height: 14, backgroundColor: colors.border },
-  mapContainer: {
-    marginHorizontal: spacing.base,
-    height: 270,
-    borderRadius: radius.xl,
-    overflow: 'hidden',
-    position: 'relative',
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    backgroundColor: '#E8F4EC',
-  },
-  nativeMapPlaceholder: {
-    flex: 1,
+  root: { flex: 1, alignItems: 'center', backgroundColor: Platform.OS === 'web' ? '#f3f6f3' : '#EEF2EF' },
+  maxContainer: { flex: 1, width: '100%', maxWidth: 600, overflow: 'hidden', backgroundColor: '#EEF2EF' },
+  map: { flex: 1, backgroundColor: '#EEF2EF' },
+  mapOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#EEF2EF',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: spacing.base,
-    backgroundColor: '#F8FAFC',
+    padding: spacing.lg,
   },
-  nativeMapText: { fontSize: 16, fontWeight: '800', color: colors.primary800, marginTop: 10 },
-  nativeMapSub: { fontSize: 12, color: colors.textSecondary, marginTop: 4 },
-  openGoogleMapsBtn: {
-    marginTop: 14,
+  mapOverlayText: { marginTop: spacing.sm, fontSize: 13, color: colors.textSecondary, textAlign: 'center' },
+
+  // Top overlay
+  topOverlay: { position: 'absolute', top: 0, left: 0, right: 0 },
+  searchCard: {
+    ...shadow,
     flexDirection: 'row',
     alignItems: 'center',
+    height: 48,
+    marginHorizontal: spacing.base,
+    paddingHorizontal: spacing.base,
+    backgroundColor: colors.white,
+    borderRadius: radius.full,
+  },
+  searchLeadIcon: { marginRight: 10 },
+  searchLeadBtn: { marginRight: 10 },
+  searchInput: { flex: 1, fontSize: 14, color: colors.textPrimary, padding: 0 },
+  chipRow: { paddingHorizontal: spacing.base, paddingTop: spacing.md, paddingBottom: spacing.sm, gap: spacing.sm },
+  filterChip: {
+    ...shadow,
+    shadowOpacity: 0.08,
+    elevation: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 34,
+    paddingHorizontal: 14,
+    borderRadius: radius.full,
+    backgroundColor: colors.white,
+  },
+  filterChipActive: { backgroundColor: colors.primary800 },
+  filterDot: { width: 7, height: 7, borderRadius: 4, marginRight: 7 },
+  filterChipText: { fontSize: 13, fontWeight: '600', color: colors.textPrimary },
+  filterChipTextActive: { color: colors.white },
+
+  // Floating controls
+  controlsCol: { position: 'absolute', right: spacing.base, gap: spacing.sm },
+  roundBtn: {
+    ...shadow,
+    width: FAB_SIZE,
+    height: FAB_SIZE,
+    borderRadius: FAB_SIZE / 2,
+    backgroundColor: colors.white,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  roundBtnActive: { backgroundColor: colors.primary50 },
+  reportFab: {
+    ...shadow,
+    position: 'absolute',
+    left: spacing.base,
+    height: FAB_SIZE,
+    paddingHorizontal: 18,
+    borderRadius: FAB_SIZE / 2,
     backgroundColor: colors.primary800,
-    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  reportFabText: { color: colors.white, fontSize: 14, fontWeight: '700' },
+  layersCard: {
+    ...shadow,
+    position: 'absolute',
+    right: spacing.base,
+    width: 170,
+    paddingVertical: spacing.xs,
+    backgroundColor: colors.white,
+    borderRadius: radius.lg,
+  },
+  layerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.base, paddingVertical: spacing.md },
+  layerRowText: { flex: 1, fontSize: 14, color: colors.textPrimary, fontWeight: '500' },
+
+  // Sheet
+  sheet: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 16,
+  },
+  handleHit: { alignItems: 'center', paddingTop: 10, paddingBottom: 10 },
+  handle: { width: 38, height: 4, borderRadius: 2, backgroundColor: '#D5DBD7' },
+  sheetHeader: { paddingHorizontal: spacing.lg, paddingBottom: spacing.sm },
+  sheetTitle: { fontSize: 18, fontWeight: '800', color: colors.textPrimary },
+  sheetSub: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  sheetScroll: { flex: 1 },
+  sheetScrollContent: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
+
+  // List
+  listItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.md, gap: spacing.md },
+  listItemDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  listIcon: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
+  listTextCol: { flex: 1 },
+  listTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary },
+  listSub: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  listDistance: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
+
+  emptyBox: { alignItems: 'center', paddingVertical: spacing.lg },
+  emptyTitle: { marginTop: spacing.sm, fontSize: 14, color: colors.textSecondary, textAlign: 'center' },
+  emptyBtn: {
+    marginTop: spacing.md,
+    paddingHorizontal: spacing.lg,
     paddingVertical: 10,
     borderRadius: radius.full,
-  },
-  openGoogleMapsBtnText: { color: colors.white, fontSize: 13, fontWeight: '700' },
-  activeLocationBadge: {
-    position: 'absolute',
-    top: 8,
-    left: 8,
-    right: 8,
-    backgroundColor: 'rgba(255,255,255,0.95)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: radius.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  activeLocationText: { fontSize: 11, fontWeight: '700', color: colors.textPrimary, flex: 1 },
-  filterBar: { marginVertical: spacing.xs },
-  filterScroll: { paddingHorizontal: spacing.base, gap: 8 },
-  locationPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: radius.full,
-    borderWidth: 1,
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderColor: colors.border,
-  },
-  locationPillNgo: { borderColor: '#86EFAC' },
-  locationPillMyReport: { borderColor: '#FDE68A' },
-  locationPillDump: { borderColor: '#FCA5A5' },
-  locationPillActive: { backgroundColor: colors.primary800, borderColor: colors.primary800 },
-  locationPillText: { fontSize: 11, fontWeight: '700', color: colors.textPrimary, maxWidth: 170 },
-  locationPillTextActive: { color: colors.white },
-  bottomArea: { flex: 1, paddingHorizontal: spacing.base, marginTop: spacing.xs },
-  detailCard: {
-    backgroundColor: colors.white,
-    borderRadius: radius.xl,
-    padding: spacing.base,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: 16,
-  },
-  detailHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  tagRow: { flexDirection: 'row', gap: 6, marginBottom: 4 },
-  markerTypeBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: radius.xs },
-  markerTypeBadgeText: { fontSize: 9.5, fontWeight: '800' },
-  markerTitle: { fontSize: 16, fontWeight: '800', color: colors.primary800, marginTop: 2 },
-  markerAddress: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-  closeCalloutBtn: { padding: 4 },
-  ngoStreamsBox: {
-    marginTop: 10,
-    backgroundColor: '#F0FDF4',
-    padding: 10,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: '#DCFCE7',
-  },
-  ngoStreamsTitle: { fontSize: 11, fontWeight: '700', color: '#166534', marginBottom: 6 },
-  ngoStreamPills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  ngoStreamChip: {
-    backgroundColor: colors.white,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radius.full,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-  },
-  ngoStreamChipText: { fontSize: 10, fontWeight: '600', color: '#166534' },
-  photoContainer: { position: 'relative', marginTop: 10 },
-  detailPhoto: { width: '100%', height: 130, borderRadius: radius.md },
-  photoBadge: {
-    position: 'absolute',
-    bottom: 8,
-    left: 8,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radius.xs,
-  },
-  photoBadgeText: { color: colors.white, fontSize: 10, fontWeight: '700' },
-  notesBox: {
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    padding: 10,
-    borderRadius: radius.md,
-    marginTop: 10,
-  },
-  notesLabel: { fontSize: 10, fontWeight: '700', color: colors.textSecondary },
-  notesText: { fontSize: 12, color: colors.textPrimary, marginTop: 2, lineHeight: 17 },
-  detailFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 12,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  statusLabel: { fontSize: 10, color: colors.textSecondary, fontWeight: '700' },
-  statusVal: { fontSize: 12, fontWeight: '800' },
-  detailActionButtons: { flexDirection: 'row', gap: 6 },
-  directionsBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: colors.primary800,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: radius.full,
   },
-  directionsBtnText: { color: colors.white, fontSize: 11, fontWeight: '800' },
-  ngoDirLinkBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: radius.full,
-  },
-  ngoDirLinkBtnText: { color: colors.primary800, fontSize: 11, fontWeight: '700' },
-  sectionContainer: { marginBottom: 20 },
-  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  sectionHeading: { fontSize: 15, fontWeight: '800', color: colors.primary800 },
-  sectionCountBadge: { backgroundColor: colors.primary50, paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.full },
-  sectionCountText: { fontSize: 11, fontWeight: '700', color: colors.primary800 },
-  myDumpCard: {
-    backgroundColor: colors.white,
-    padding: spacing.base,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: 10,
-  },
-  myDumpTopRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  myDumpBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.xs },
-  statusDot: { width: 6, height: 6, borderRadius: 3, marginRight: 4 },
-  statusPillText: { fontSize: 9.5, fontWeight: '800' },
-  myDumpTime: { fontSize: 10, color: colors.textSecondary },
-  myDumpTitle: { fontSize: 14, fontWeight: '800', color: colors.textPrimary },
-  myDumpAddress: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
-  myDumpThumb: { width: 55, height: 55, borderRadius: radius.md },
-  myDumpNotes: { fontSize: 11.5, color: '#475569', fontStyle: 'italic', marginTop: 6 },
-  myDumpActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border },
-  myDumpMapBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: radius.full,
-  },
-  myDumpMapBtnText: { fontSize: 11, fontWeight: '700', color: colors.primary800 },
-  myDumpDirBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.primary800,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: radius.full,
-  },
-  myDumpDirBtnText: { fontSize: 11, fontWeight: '700', color: colors.white },
-  emptyPrompt: {
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderRadius: radius.xl,
-    padding: spacing.base,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginVertical: 6,
-  },
-  emptyPromptTitle: { fontSize: 14, fontWeight: '800', color: colors.primary800, marginTop: 6 },
-  emptyPromptSub: { fontSize: 11.5, color: colors.textSecondary, textAlign: 'center', marginTop: 4, lineHeight: 16, maxWidth: 300 },
-  emptyReportBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.primary800,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: radius.full,
-    marginTop: 10,
-  },
-  emptyReportBtnText: { color: colors.white, fontSize: 11.5, fontWeight: '800' },
-  ngoCard: {
-    backgroundColor: colors.white,
-    padding: spacing.base,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: 10,
-  },
-  ngoCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  ngoName: { fontSize: 16, fontWeight: '800', color: colors.primary800, textTransform: 'lowercase' },
-  ngoBadge: { backgroundColor: colors.primary800, paddingHorizontal: 8, paddingVertical: 2, borderRadius: radius.xs },
-  ngoBadgeText: { color: colors.white, fontSize: 10, fontWeight: '800' },
-  ngoAddress: { fontSize: 11.5, color: colors.textSecondary, marginTop: 3 },
-  ngoStreamsSub: { fontSize: 10.5, fontWeight: '700', color: colors.textSecondary, marginTop: 8, marginBottom: 4 },
-  streamPill: {
-    backgroundColor: colors.white,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radius.full,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  streamPillText: { fontSize: 10, color: colors.primary800, fontWeight: '600' },
-  ngoCardActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 8,
-    marginTop: 10,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  // MODAL STYLES FOR SHOW DETAILS
-  modalBackdrop: {
+  emptyBtnText: { color: colors.white, fontSize: 13, fontWeight: '700' },
+
+  // Selected place
+  selHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  typePill: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 9, paddingVertical: 3, borderRadius: radius.full },
+  typePillText: { fontSize: 11, fontWeight: '700' },
+  selCloseBtn: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surfaceAlt, justifyContent: 'center', alignItems: 'center' },
+  selTitle: { fontSize: 19, fontWeight: '800', color: colors.textPrimary, marginTop: spacing.sm, textTransform: 'capitalize' },
+  selAddress: { fontSize: 13, color: colors.textSecondary, marginTop: 3, lineHeight: 18 },
+  selMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 3 },
+  selActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  primaryBtn: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'flex-end',
+    height: 42,
+    borderRadius: radius.full,
+    backgroundColor: colors.primary800,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  modalDragHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#CBD5E1',
-    alignSelf: 'center',
-    marginBottom: 12,
-  },
-  modalSheet: {
-    width: '100%',
-    maxWidth: 600,
-    backgroundColor: colors.white,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    padding: spacing.base,
-    paddingTop: 12,
-    maxHeight: '85%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  modalTitle: { fontSize: 20, fontWeight: '800', color: colors.primary800, marginTop: 2 },
-  modalSubtitle: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-  modalCloseBtn: { padding: 4 },
-  modalBody: { marginBottom: 12 },
-  modalMetaCard: {
-    flexDirection: 'row',
-    backgroundColor: colors.primary50 || '#f0fdf4',
-    padding: 12,
-    borderRadius: radius.md,
-    gap: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#DCFCE7',
-  },
-  modalMetaCol: { flex: 1 },
-  modalMetaLabel: { fontSize: 10, color: colors.textSecondary, fontWeight: '700' },
-  modalMetaVal: { fontSize: 13, fontWeight: '800', marginTop: 2 },
-  modalPhotoBox: { position: 'relative', marginBottom: 12 },
-  modalPhoto: { width: '100%', height: 160, borderRadius: radius.md },
-  modalPhotoTag: {
-    position: 'absolute',
-    bottom: 8,
-    left: 8,
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radius.xs,
-  },
-  modalPhotoTagText: { color: colors.white, fontSize: 10, fontWeight: '700' },
-  modalSectionBox: {
-    backgroundColor: colors.cardBg || '#f8fafc',
-    padding: 12,
-    borderRadius: radius.md,
-    marginBottom: 10,
+  primaryBtnText: { color: colors.white, fontSize: 14, fontWeight: '700' },
+  outlineBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     borderWidth: 1,
     borderColor: colors.border,
-  },
-  modalSectionTitleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  modalSectionTitle: { fontSize: 12, fontWeight: '800', color: colors.primary800 },
-  modalSectionContent: { fontSize: 12.5, color: colors.textPrimary, lineHeight: 18 },
-  modalCoordsText: { fontSize: 11, color: colors.textSecondary, marginTop: 4, fontStyle: 'italic' },
-  modalStreamGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
-  modalStreamPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.white,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: radius.full,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-  },
-  modalStreamText: { fontSize: 11, color: '#166534', fontWeight: '700' },
-  modalFooterActions: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  modalDirectionsBtn: {
-    flex: 1,
-    flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: colors.primary800,
-    paddingVertical: 12,
-    borderRadius: radius.full,
   },
-  modalDirectionsBtnText: { color: colors.white, fontSize: 13, fontWeight: '800' },
-  modalDirectoryBtn: {
+  detailBlock: { marginTop: spacing.lg },
+  detailPhoto: { width: '100%', height: 160, borderRadius: radius.lg, marginBottom: spacing.base },
+  detailSection: { marginBottom: spacing.base },
+  detailLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 0.4, textTransform: 'uppercase', marginBottom: 6 },
+  detailValue: { fontSize: 14, color: colors.textPrimary, lineHeight: 20 },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  streamChip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.full, backgroundColor: colors.primary50 },
+  streamChipText: { fontSize: 12, color: colors.primary800, fontWeight: '600', textTransform: 'capitalize' },
+  linkRow: {
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: colors.cardBg || '#f4f8f4',
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: radius.full,
+    justifyContent: 'space-between',
+    paddingVertical: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
   },
-  modalDirectoryBtnText: { color: colors.primary800, fontSize: 12.5, fontWeight: '700' },
+  linkRowText: { fontSize: 14, fontWeight: '600', color: colors.primary700 },
 });

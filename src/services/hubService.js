@@ -1,7 +1,7 @@
 import { supabase } from './supabase.js';
 
 /**
- * Standardized fallback list of all 15 verified Recovery Hubs from Supabase markers table.
+ * Standardized fallback list of all 15 verified Recycling Centres from Supabase markers table.
  * Ensures zero-delay instant rendering on startup and offline resilience.
  */
 export const DEFAULT_RECOVERY_HUBS = [
@@ -19,7 +19,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.937,
     phone: '8097479747',
     website: 'https://www.greenciti.org',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -44,7 +44,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 77.6101,
     phone: '080-41689889',
     website: 'https://saahas.org',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -69,7 +69,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.8427,
     phone: '91 9137253765',
     website: 'https://www.greencf.org',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -94,7 +94,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.8587,
     phone: '91 99675 38049',
     website: 'https://www.greenyatra.org',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -119,7 +119,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.8538,
     phone: '91 99200 45587',
     website: 'https://earth5r.org',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -144,7 +144,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 77.2375,
     phone: '91 11 4657 4171',
     website: 'https://www.chintan-india.org',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -169,7 +169,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.936,
     phone: '91 62915 59908',
     website: 'https://recycleindiafoundation.com',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -194,7 +194,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.8697,
     phone: '1800 202 9012',
     website: 'https://goonj.org/dropping-centres',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -219,7 +219,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.9081,
     phone: '91 92892 36008',
     website: 'https://www.karosambhav.com/collection-centres',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -244,7 +244,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.85,
     phone: '91 80806 96004',
     website: 'https://www.mumbaiscrap.in',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -269,7 +269,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.863,
     phone: '91 96533 30712',
     website: 'https://respunindia.com',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -294,7 +294,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.8478,
     phone: '022-24174381',
     website: 'https://streemuktisanghatana.org',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -319,7 +319,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.842,
     phone: '',
     website: 'https://wastematters.org.in',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -344,7 +344,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.9781,
     phone: '91 89767 98272',
     website: 'https://www.plastoconomyfoundation.co.in',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -369,7 +369,7 @@ export const DEFAULT_RECOVERY_HUBS = [
     longitude: 72.872,
     phone: '8104047525',
     website: 'https://tisser.in/donation',
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -386,7 +386,7 @@ export const DEFAULT_RECOVERY_HUBS = [
  * Cleanly format a raw row from Supabase 'markers' table into a unified Hub object.
  */
 export function formatHubRecord(item, index) {
-  const rawName = item.name || 'Recovery Hub';
+  const rawName = item.name || 'Recycling Centre';
   // Clean underscore separators (e.g. Green_Communities_Foundation -> Green Communities Foundation)
   const cleanName = rawName.replace(/_/g, ' ').trim();
   const displayName = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
@@ -428,7 +428,7 @@ export function formatHubRecord(item, index) {
     longitude: lon,
     phone: item.phone ? item.phone.toString().trim() : '',
     website: websiteUrl,
-    status: 'Recovery Hub',
+    status: 'Recycling Centre',
     statusColor: '#166534',
     icon: 'business',
     color: '#166534',
@@ -444,7 +444,7 @@ export function formatHubRecord(item, index) {
 }
 
 /**
- * Fetch all recovery hubs dynamically from Supabase 'markers' table,
+ * Fetch all recycling centres dynamically from Supabase 'markers' table,
  * falling back gracefully to DEFAULT_RECOVERY_HUBS if network fails.
  */
 export async function fetchRecoveryHubs() {
@@ -459,7 +459,7 @@ export async function fetchRecoveryHubs() {
       return formatted;
     }
   } catch (err) {
-    console.warn('Error fetching recovery hubs from Supabase:', err?.message || err);
+    console.warn('Error fetching recycling centres from Supabase:', err?.message || err);
   }
   return DEFAULT_RECOVERY_HUBS;
 }

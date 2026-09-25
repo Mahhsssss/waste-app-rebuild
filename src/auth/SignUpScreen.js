@@ -57,12 +57,12 @@ export default function SignUpScreen({ onNavigate }) {
         if (isRateLimited) {
           setErrorType('warning');
           setErrorMessage(
-            'Supabase email rate limit reached on the free tier. Tap below to enter directly as a Citizen with all features unlocked!'
+            'Sign-ups are paused for now. You can continue as a guest with full access to every feature.'
           );
         } else if (errMsg.toLowerCase().includes('already registered')) {
           setErrorType('warning');
           setErrorMessage(
-            'This email is already registered. You can log in with your password, or enter as Citizen below.'
+            'This email is already registered. Log in with your password, or continue as a guest.'
           );
         } else {
           setErrorType('error');
@@ -71,7 +71,7 @@ export default function SignUpScreen({ onNavigate }) {
       } else {
         setErrorType('success');
         setErrorMessage(
-          `Your account has been created! A verification link was sent to ${email}. You can also enter immediately as a Citizen below.`
+          `Your account has been created! A verification link was sent to ${email}. You can also continue as a guest right away.`
         );
       }
     } catch (err) {
@@ -225,7 +225,7 @@ export default function SignUpScreen({ onNavigate }) {
                       onPress={handleGuestSignIn}
                     >
                       <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '700' }}>
-                        Enter Directly as Citizen
+                        Continue as Guest
                       </Text>
                     </TouchableOpacity>
                     <TouchableOpacity
@@ -350,7 +350,7 @@ export default function SignUpScreen({ onNavigate }) {
               )}
             </TouchableOpacity>
 
-            {/* Instant Demo Access / Continue as Guest */}
+            {/* Continue as Guest */}
             <TouchableOpacity
               style={[
                 globalStyles.socialButtonCard,
@@ -369,14 +369,14 @@ export default function SignUpScreen({ onNavigate }) {
                 <ActivityIndicator size="small" color={colors.primary600} />
               ) : (
                 <>
-                  <Ionicons name="sparkles" size={20} color="#059669" />
+                  <Ionicons name="person-outline" size={20} color="#059669" />
                   <Text
                     style={[
                       globalStyles.socialButtonCardText,
                       { color: '#047857', fontWeight: '700' },
                     ]}
                   >
-                    Continue as Guest (Instant Demo)
+                    Continue as Guest
                   </Text>
                 </>
               )}

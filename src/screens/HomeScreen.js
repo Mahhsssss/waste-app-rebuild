@@ -33,30 +33,8 @@ export default function HomeScreen({ navigation }) {
   const [selectedFilter, setSelectedFilter] = useState('All');
   const [viewMode, setViewMode] = useState('Feed');
 
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-
   useEffect(() => {
     loadBlogs();
-
-    const pulseAnimation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.03,
-          duration: 1100,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 1100,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ])
-    );
-
-    pulseAnimation.start();
-    return () => pulseAnimation.stop();
   }, []);
 
   const loadBlogs = async () => {
@@ -67,7 +45,7 @@ export default function HomeScreen({ navigation }) {
   };
 
   const categories = [
-    { label: 'All', icon: 'sparkles-outline' },
+    { label: 'All', icon: 'apps-outline' },
     { label: 'Paper & Cardboard', icon: 'document-text-outline' },
     { label: 'Plastics', icon: 'trash-bin-outline' },
     { label: 'E-Waste', icon: 'hardware-chip-outline' },
@@ -242,42 +220,24 @@ export default function HomeScreen({ navigation }) {
 
             {/* Hero Banner */}
             <View style={styles.heroCardContainer}>
-              <View style={styles.heroCardContent}>
-                <View style={styles.heroTopRow}>
-                  <View style={styles.heroTag}>
-                    <Ionicons name="sparkles" size={12} color={colors.white} />
-                    <Text style={styles.heroTagText}>One Step closer to sustainability</Text>
-                  </View>
-                  <Text style={styles.heroMetaText}>v2.4 Active</Text>
-                </View>
+              <Text style={styles.heroTitle}>Identify & Divert Hazardous Scrap</Text>
+              <Text style={styles.heroSubtitle}>
+                Scan discarded items to find local recycling centres & ecological impacts.
+              </Text>
 
-                <Text style={styles.heroTitle}>Identify & Divert Hazardous Scrap</Text>
-                <Text style={styles.heroSubtitle}>
-                  Scan discarded items instantly to find local recovery centers & ecological impacts.
-                </Text>
-
-                <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-                  <TouchableOpacity
-                    style={styles.heroScanBtn}
-                    onPress={() => navigation.navigate('ScanTab')}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons
-                      name="scan"
-                      size={20}
-                      color={colors.primary800}
-                      style={styles.heroScanIcon}
-                    />
-                    <Text style={styles.heroScanBtnText}>Launch Scanner</Text>
-                    <Ionicons
-                      name="arrow-forward"
-                      size={16}
-                      color={colors.primary800}
-                      style={styles.heroArrowIcon}
-                    />
-                  </TouchableOpacity>
-                </Animated.View>
-              </View>
+              <TouchableOpacity
+                style={styles.heroScanBtn}
+                onPress={() => navigation.navigate('ScanCamera')}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="scan"
+                  size={18}
+                  color={colors.white}
+                  style={styles.heroScanIcon}
+                />
+                <Text style={styles.heroScanBtnText}>Launch Scanner</Text>
+              </TouchableOpacity>
             </View>
 
             {/* Section Header */}
@@ -302,64 +262,52 @@ export default function HomeScreen({ navigation }) {
                     </Text>
                   </View>
                 ) : (
-                  filteredBlogs.map((item, index) => {
-                    const isLarge = index % 3 === 0;
-                    return (
-                      <ScalePressable
-                        key={item.id}
-                        style={[
-                          styles.bentoCard,
-                          isLarge ? styles.bentoCardLarge : styles.bentoCardHalf,
-                        ]}
-                        onPress={() => Linking.openURL(item.link)}
-                        scaleTo={0.97}
-                      >
-                        <View style={styles.bentoHeader}>
-                          <View
-                            style={[
-                              styles.badgePill,
-                              {
-                                backgroundColor:
-                                  item.accentColor || colors.primary600,
-                              },
-                            ]}
-                          >
-                            <Text style={styles.badgePillText}>
-                              {item.urgency || 'HAZARD'}
-                            </Text>
+                  filteredBlogs.map((item) => (
+                    <ScalePressable
+                      key={item.id}
+                      style={styles.articleCard}
+                      onPress={() => Linking.openURL(item.link)}
+                      scaleTo={0.98}
+                    >
+                      <View style={styles.articleHeader}>
+                        <Text style={styles.articleTitle} numberOfLines={2}>
+                          {item.title}
+                        </Text>
+                        <View
+                          style={[
+                            styles.articleBadge,
+                            { backgroundColor: item.accentColor || colors.primary800 },
+                          ]}
+                        >
+                          <Text style={styles.articleBadgeText}>
+                            {item.urgency || 'HAZARD'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <Text style={styles.articleSource} numberOfLines={1}>
+                        {[item.source, item.date].filter(Boolean).join('  ·  ')}
+                      </Text>
+
+                      <Text style={styles.articleSnippet} numberOfLines={3}>
+                        {item.snippet}
+                      </Text>
+
+                      <View style={styles.articleDivider} />
+
+                      <View style={styles.articleFooter}>
+                        <View style={styles.articleMeta}>
+                          <View style={styles.articleCategoryPill}>
+                            <Text style={styles.articleCategoryText} numberOfLines={1}>{item.category}</Text>
                           </View>
-                          <Text style={styles.bentoCategory}>{item.category}</Text>
                         </View>
-
-                        <View style={styles.bentoBody}>
-                          <Text
-                            style={
-                              isLarge ? styles.bentoTitleLarge : styles.bentoTitle
-                            }
-                            numberOfLines={2}
-                          >
-                            {item.title}
-                          </Text>
-                          <Text
-                            style={styles.bentoSnippet}
-                            numberOfLines={isLarge ? 3 : 2}
-                          >
-                            {item.snippet}
-                          </Text>
+                        <View style={styles.articleReadBtn}>
+                          <Text style={styles.articleReadText}>Read</Text>
+                          <Ionicons name="open-outline" size={13} color={colors.white} style={{ marginLeft: 4 }} />
                         </View>
-
-                        <View style={styles.bentoFooter}>
-                          <Text style={styles.bentoSource}>{item.source}</Text>
-                          <Ionicons
-                            name="arrow-up-outline"
-                            size={16}
-                            color={colors.white}
-                            style={styles.bentoFooterIcon}
-                          />
-                        </View>
-                      </ScalePressable>
-                    );
-                  })
+                      </View>
+                    </ScalePressable>
+                  ))
                 )}
               </View>
             )}
@@ -599,36 +547,31 @@ const styles = StyleSheet.create({
   storyInnerCircle: { flex: 1, borderRadius: 26, backgroundColor: colors.primary100, justifyContent: 'center', alignItems: 'center' },
   storyLabel: { fontSize: 10.5, fontWeight: '600', color: colors.textSecondary, marginTop: 4, textAlign: 'center', width: '100%' },
   storyLabelActive: { color: colors.primary800, fontWeight: '800' },
-  heroCardContainer: { marginHorizontal: spacing.base, marginVertical: spacing.sm, borderRadius: radius.xl, backgroundColor: colors.primary800, padding: spacing.lg },
-  heroCardContent: { width: '100%' },
-  heroTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs },
-  heroTag: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, 0.2)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.full, gap: 4 },
-  heroTagText: { color: colors.white, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
-  heroMetaText: { color: colors.primary100, fontSize: 11, fontWeight: '600' },
-  heroTitle: { fontSize: 22, fontWeight: '800', color: colors.white, lineHeight: 28, marginTop: 4 },
-  heroSubtitle: { fontSize: 13, color: colors.primary100, marginTop: 6, lineHeight: 18 },
-  heroScanBtn: { marginTop: spacing.md, backgroundColor: colors.white, borderRadius: radius.full, paddingVertical: 12, paddingHorizontal: spacing.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  heroCardContainer: { marginHorizontal: spacing.base, marginVertical: spacing.sm, borderRadius: radius.xl, backgroundColor: colors.primary50, padding: spacing.lg },
+  heroTitle: { fontSize: 19, fontWeight: '800', color: colors.primary800, lineHeight: 25 },
+  heroSubtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 4, lineHeight: 18 },
+  heroScanBtn: { marginTop: spacing.md, alignSelf: 'flex-start', backgroundColor: colors.primary800, borderRadius: radius.full, paddingVertical: 10, paddingHorizontal: spacing.lg, flexDirection: 'row', alignItems: 'center' },
   heroScanIcon: { marginRight: 8 },
-  heroScanBtnText: { color: colors.primary800, fontSize: 14, fontWeight: '800' },
-  heroArrowIcon: { marginLeft: 6 },
+  heroScanBtnText: { color: colors.white, fontSize: 14, fontWeight: '700' },
   sectionHeader: { paddingHorizontal: spacing.base, marginTop: spacing.md, marginBottom: spacing.xs },
   sectionSubtitle: { fontSize: 10, fontWeight: '800', color: colors.primary600, letterSpacing: 1 },
   sectionMainTitle: { fontSize: 20, fontWeight: '800', color: colors.primary800 },
   bentoGrid: { paddingHorizontal: spacing.base, gap: spacing.sm },
-  bentoCard: { backgroundColor: colors.primary800, borderRadius: radius.xl, padding: spacing.base, justifyContent: 'space-between', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  bentoCardLarge: { width: '100%', minHeight: 170 },
-  bentoCardHalf: { width: '100%', minHeight: 150 },
-  bentoHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  badgePill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.xs },
-  badgePillText: { color: colors.white, fontSize: 9.5, fontWeight: '800', letterSpacing: 0.5 },
-  bentoCategory: { color: colors.primary100, fontSize: 11, fontWeight: '600' },
-  bentoBody: { marginVertical: 10 },
-  bentoTitleLarge: { color: colors.white, fontSize: 17, fontWeight: '800', lineHeight: 23 },
-  bentoTitle: { color: colors.white, fontSize: 15, fontWeight: '700', lineHeight: 20 },
-  bentoSnippet: { color: colors.primary100, fontSize: 12, marginTop: 4, lineHeight: 16 },
-  bentoFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.15)' },
-  bentoSource: { color: colors.primary100, fontSize: 11, fontWeight: '600' },
-  bentoFooterIcon: { transform: [{ rotate: '45deg' }] },
+  // Article cards mirror the Recycling Centres (NgoScreen) card style
+  articleCard: { backgroundColor: colors.white, borderRadius: radius.xl, padding: spacing.base, borderWidth: 1, borderColor: colors.border },
+  articleHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: spacing.sm },
+  articleTitle: { flex: 1, fontSize: 16, fontWeight: '800', color: colors.primary800, lineHeight: 21 },
+  articleBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: radius.xs, marginTop: 2 },
+  articleBadgeText: { color: colors.white, fontSize: 10, fontWeight: '800' },
+  articleSnippet: { fontSize: 12, color: colors.textSecondary, marginTop: 6, lineHeight: 17 },
+  articleDivider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.sm },
+  articleFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.sm },
+  articleMeta: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  articleCategoryPill: { flexShrink: 1, backgroundColor: colors.white, paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.full, borderWidth: 1, borderColor: colors.border },
+  articleCategoryText: { fontSize: 11, color: colors.primary800, fontWeight: '600' },
+  articleSource: { fontSize: 12, color: colors.primary700, fontWeight: '600', marginTop: 4 },
+  articleReadBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.primary800, paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.full },
+  articleReadText: { color: colors.white, fontSize: 11, fontWeight: '700' },
   floatingPillContainer: { 
     position: 'absolute', 
     left: 0, 

@@ -176,7 +176,7 @@ export default function HistoryScreen({ navigation }) {
 
             <TouchableOpacity
               style={styles.scanMoreBtn}
-              onPress={() => navigation.navigate('ScanTab')}
+              onPress={() => navigation.navigate('ScanCamera')}
             >
               <Ionicons name="camera" size={18} color={colors.white} style={{ marginRight: 8 }} />
               <Text style={styles.scanMoreBtnText}>Scan More Waste</Text>

@@ -30,12 +30,14 @@ export default function SplashScreen({ onFinish }) {
 }
 
 const styles = StyleSheet.create({
+  // flex fill instead of absoluteFill: this renders at the app root, where an absolute
+  // child can collapse to its content height and leave the rest of the screen white
   container: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
+    width: '100%',
     backgroundColor: '#65a30d',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 99999, // Ensures it covers everything while active
   },
   logo: {
     width: 200,

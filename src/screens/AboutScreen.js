@@ -69,9 +69,9 @@ export default function AboutScreen({ navigation }) {
               ))}
             </View>
 
-            {/* Recovery Hubs */}
+            {/* Recycling Centres */}
             <View style={styles.sectionCard}>
-              <Text style={styles.sectionTitle}>Recovery Hubs</Text>
+              <Text style={styles.sectionTitle}>Recycling Centres</Text>
               <Text style={styles.partnerItem}>• greenciti (Dreams Mall, Bhandup West)</Text>
               <Text style={styles.partnerItem}>• saahas (MCHS Colony, Kanjurmarg)</Text>
             </View>

@@ -37,7 +37,7 @@ export default function NgoSearchScreen({ navigation, route }) {
         setHubs(data);
       }
     } catch (error) {
-      console.warn('Error fetching recovery hubs in NgoScreen:', error.message);
+      console.warn('Error fetching recycling centres in NgoScreen:', error.message);
     } finally {
       setLoading(false);
     }
@@ -95,8 +95,8 @@ export default function NgoSearchScreen({ navigation, route }) {
                 <Ionicons name="arrow-back" size={24} color={colors.primary800} />
               </TouchableOpacity>
               <View style={{ marginLeft: 8 }}>
-                <Text style={styles.headerTitle}>Recovery Hubs</Text>
-                <Text style={styles.headerSubtitle}>Discover centers, accepted streams & drop-off details</Text>
+                <Text style={styles.headerTitle}>Recycling Centres</Text>
+                <Text style={styles.headerSubtitle}>Drop-off points & what they accept</Text>
               </View>
             </View>
           </View>
@@ -120,7 +120,7 @@ export default function NgoSearchScreen({ navigation, route }) {
 
           {/* Section Header */}
           <View style={styles.sectionMetaRow}>
-            <Text style={styles.availableTitle}>Available Centers</Text>
+            <Text style={styles.availableTitle}>Available Centres</Text>
             <View style={styles.countBadge}>
               <Text style={styles.countText}>{filteredHubs.length} found</Text>
             </View>
@@ -142,13 +142,13 @@ export default function NgoSearchScreen({ navigation, route }) {
             >
               {filteredHubs.length === 0 ? (
                 <View style={styles.emptyContainer}>
-                  <Text style={styles.emptyText}>No recovery hubs found matching your search.</Text>
+                  <Text style={styles.emptyText}>No recycling centres found matching your search.</Text>
                 </View>
               ) : (
                 filteredHubs.map((hub) => (
                   <View key={hub.id} style={styles.hubCard}>
                     <View style={styles.hubCardHeader}>
-                      <Text style={styles.hubName}>{hub.name}</Text>
+                      <Text style={styles.hubName} numberOfLines={2}>{hub.name}</Text>
                       <View style={styles.ngoBadge}>
                         <Text style={styles.ngoBadgeText}>{hub.type}</Text>
                       </View>
@@ -158,7 +158,7 @@ export default function NgoSearchScreen({ navigation, route }) {
 
                     <View style={styles.divider} />
 
-                    <Text style={styles.streamsLabel}>Accepted Streams ({hub.streams.length}):</Text>
+                    <Text style={styles.streamsLabel}>Accepts ({hub.streams.length})</Text>
                     <View style={styles.streamsContainer}>
                       {hub.streams.map((stream, idx) => (
                         <View key={idx} style={styles.streamPill}>
@@ -171,25 +171,27 @@ export default function NgoSearchScreen({ navigation, route }) {
 
                     <View style={styles.hubCardFooter}>
                       <TouchableOpacity
-                        style={styles.detailsBtn}
-                        onPress={() => setSelectedDetailHub(hub)}
+                        style={styles.directionsBtn}
+                        onPress={() => handleDirections(hub.latitude, hub.longitude)}
+                        activeOpacity={0.85}
                       >
-                        <Ionicons name="information-circle-outline" size={14} color={colors.primary800} style={{ marginRight: 4 }} />
-                        <Text style={styles.detailsBtnText}>Details</Text>
+                        <Ionicons name="navigate" size={15} color={colors.white} style={{ marginRight: 6 }} />
+                        <Text style={styles.directionsBtnText}>Directions</Text>
                       </TouchableOpacity>
 
                       {hub.phone ? (
                         <TouchableOpacity
-                          style={styles.callBtn}
+                          style={styles.iconBtn}
                           onPress={() => Linking.openURL(`tel:${hub.phone}`)}
+                          accessibilityLabel="Call"
                         >
-                          <Ionicons name="call" size={14} color={colors.white} style={{ marginRight: 4 }} />
-                          <Text style={styles.callBtnText}>Call</Text>
+                          <Ionicons name="call-outline" size={17} color={colors.primary800} />
                         </TouchableOpacity>
                       ) : null}
 
                       <TouchableOpacity
-                        style={styles.mapBtn}
+                        style={styles.iconBtn}
+                        accessibilityLabel="Show on map"
                         onPress={() => {
                           navigation.navigate('MainTabs', {
                             screen: 'MapTab',
@@ -205,16 +207,15 @@ export default function NgoSearchScreen({ navigation, route }) {
                           });
                         }}
                       >
-                        <Ionicons name="map-outline" size={14} color={colors.primary800} style={{ marginRight: 4 }} />
-                        <Text style={styles.mapBtnText}>Map</Text>
+                        <Ionicons name="map-outline" size={17} color={colors.primary800} />
                       </TouchableOpacity>
 
                       <TouchableOpacity
-                        style={styles.directionsBtn}
-                        onPress={() => handleDirections(hub.latitude, hub.longitude)}
+                        style={styles.iconBtn}
+                        onPress={() => setSelectedDetailHub(hub)}
+                        accessibilityLabel="Details"
                       >
-                        <Ionicons name="navigate" size={14} color={colors.white} style={{ marginRight: 4 }} />
-                        <Text style={styles.directionsBtnText}>Directions</Text>
+                        <Ionicons name="information-circle-outline" size={19} color={colors.primary800} />
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -406,7 +407,7 @@ const styles = StyleSheet.create({
   loaderText: { marginTop: 10, fontSize: 13, color: colors.textSecondary },
   emptyContainer: { padding: 40, alignItems: 'center' },
   emptyText: { fontSize: 13, color: colors.textSecondary, textAlign: 'center' },
-  scrollContent: { paddingHorizontal: spacing.base, gap: spacing.sm },
+  scrollContent: { paddingHorizontal: spacing.base, paddingTop: spacing.xs, gap: spacing.md },
   hubCard: {
     backgroundColor: '#f4f8f4',
     borderRadius: radius.xl,
@@ -414,57 +415,37 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  hubCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  hubName: { fontSize: 18, fontWeight: '800', color: colors.primary800, textTransform: 'capitalize' },
-  ngoBadge: { backgroundColor: colors.primary800, paddingHorizontal: 8, paddingVertical: 2, borderRadius: radius.xs },
+  hubCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: spacing.sm },
+  hubName: { flex: 1, fontSize: 18, fontWeight: '800', color: colors.primary800, textTransform: 'capitalize', lineHeight: 23 },
+  ngoBadge: { backgroundColor: colors.primary800, paddingHorizontal: 8, paddingVertical: 2, borderRadius: radius.xs, marginTop: 3 },
   ngoBadgeText: { color: colors.white, fontSize: 10, fontWeight: '800' },
-  hubAddress: { fontSize: 12, color: colors.textSecondary, marginTop: 4, lineHeight: 17 },
-  divider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.xs },
-  streamsLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginBottom: 4 },
+  hubAddress: { fontSize: 13, color: colors.textSecondary, marginTop: 6, lineHeight: 18 },
+  divider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.md },
+  streamsLabel: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.sm },
   streamsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   streamPill: { backgroundColor: colors.white, paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.full, borderWidth: 1, borderColor: colors.border },
-  streamPillText: { fontSize: 11, color: colors.primary800, fontWeight: '600' },
-  hubCardFooter: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 6, marginTop: 6 },
-  detailsBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: radius.full,
-  },
-  detailsBtnText: { color: colors.primary800, fontSize: 11, fontWeight: '700' },
-  callBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#16A34A',
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: radius.full,
-  },
-  callBtnText: { color: colors.white, fontSize: 11, fontWeight: '700' },
-  mapBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: radius.full,
-  },
-  mapBtnText: { color: colors.primary800, fontSize: 11, fontWeight: '700' },
+  streamPillText: { fontSize: 12, color: colors.primary800, fontWeight: '600' },
+  hubCardFooter: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   directionsBtn: {
+    flex: 1,
+    height: 40,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: colors.primary800,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
     borderRadius: radius.full,
   },
-  directionsBtnText: { color: colors.white, fontSize: 11, fontWeight: '700' },
+  directionsBtnText: { color: colors.white, fontSize: 14, fontWeight: '700' },
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',

@@ -91,12 +91,12 @@ export default function LoginScreen({ onNavigate }) {
         if (isEmailNotConfirmed) {
           setErrorType('warning');
           setErrorMessage(
-            'Your account was created, but Supabase requires your email to be verified. You can resend the link or enter immediately as a Citizen below.'
+            'Please verify your email to log in. You can resend the link, or continue as a guest for now.'
           );
         } else if (res.errorCode === 'invalid_credentials' || errMsg.toLowerCase().includes('invalid login credentials')) {
           setErrorType('error');
           setErrorMessage(
-            'Invalid email or password. You can use 1-Tap Instant Login below if you do not have an account.'
+            "Incorrect email or password. Don't have an account? You can continue as a guest below."
           );
         } else {
           setErrorType('error');
@@ -303,7 +303,7 @@ export default function LoginScreen({ onNavigate }) {
                       onPress={handleGuestSignIn}
                     >
                       <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '700' }}>
-                        Enter as Citizen
+                        Continue as Guest
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -386,36 +386,6 @@ export default function LoginScreen({ onNavigate }) {
               )}
             </TouchableOpacity>
 
-            {/* 1-Tap Instant Demo Login Button */}
-            <TouchableOpacity
-              style={{
-                backgroundColor: '#ECFDF5',
-                borderColor: '#10B981',
-                borderWidth: 1.5,
-                borderRadius: 14,
-                paddingVertical: 13,
-                paddingHorizontal: 16,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginTop: 10,
-              }}
-              activeOpacity={0.8}
-              disabled={guestLoading}
-              onPress={handleGuestSignIn}
-            >
-              {guestLoading ? (
-                <ActivityIndicator size="small" color="#059669" />
-              ) : (
-                <>
-                  <Ionicons name="flash" size={18} color="#059669" style={{ marginRight: 8 }} />
-                  <Text style={{ color: '#047857', fontSize: 14, fontWeight: '800' }}>
-                    1-Tap Instant Login (Citizen Demo)
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
-
             {/* Divider */}
             <View style={globalStyles.dividerContainer}>
               <View style={globalStyles.dividerLine} />
@@ -440,7 +410,7 @@ export default function LoginScreen({ onNavigate }) {
               )}
             </TouchableOpacity>
 
-            {/* Instant Demo Access / Continue as Guest */}
+            {/* Continue as Guest */}
             <TouchableOpacity
               style={[
                 globalStyles.socialButtonCard,
@@ -459,14 +429,14 @@ export default function LoginScreen({ onNavigate }) {
                 <ActivityIndicator size="small" color={colors.primary600} />
               ) : (
                 <>
-                  <Ionicons name="sparkles" size={20} color="#059669" />
+                  <Ionicons name="person-outline" size={20} color="#059669" />
                   <Text
                     style={[
                       globalStyles.socialButtonCardText,
                       { color: '#047857', fontWeight: '700' },
                     ]}
                   >
-                    Continue as Guest (Instant Access)
+                    Continue as Guest
                   </Text>
                 </>
               )}

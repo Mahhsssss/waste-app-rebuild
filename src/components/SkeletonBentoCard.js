@@ -42,7 +42,9 @@ export default function SkeletonBentoCard({ isLarge = false }) {
 
 const styles = StyleSheet.create({
   skeletonCard: {
-    backgroundColor: colors.primary800,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.border,
     borderRadius: radius.xl,
     padding: spacing.base,
     justifyContent: 'space-between',
@@ -53,27 +55,27 @@ const styles = StyleSheet.create({
   headerBar: {
     width: '35%',
     height: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: colors.primary50,
     borderRadius: radius.xs,
   },
   titleLine1: {
     width: '85%',
     height: 18,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: colors.primary50,
     borderRadius: radius.xs,
     marginTop: 12,
   },
   titleLine2: {
     width: '60%',
     height: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: colors.primary50,
     borderRadius: radius.xs,
     marginTop: 8,
   },
   footerBar: {
     width: '40%',
     height: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: colors.primary50,
     borderRadius: radius.xs,
   },
 });

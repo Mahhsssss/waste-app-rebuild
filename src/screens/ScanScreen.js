@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,10 +10,14 @@ import {
   Modal,
   FlatList,
   Platform,
+  AppState,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useIsFocused } from '@react-navigation/native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
+import { File } from 'expo-file-system';
+import { preparePhoto } from '../utils/photo';
 import { Ionicons } from '@expo/vector-icons';
 
 import globalStyles, { colors, spacing, radius } from '../globalStyles';
@@ -36,6 +40,45 @@ export default function ScanScreen({ navigation }) {
   const [detection, setDetection] = useState(null);
   const [showTestPicker, setShowTestPicker] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Only one camera preview can hold the camera at a time. Tabs stay mounted, so keep the
+  // preview mounted only while this tab is focused and the app is in the foreground;
+  // otherwise it goes black after another screen (or the system camera) takes the camera.
+  const isFocused = useIsFocused();
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  const [cameraError, setCameraError] = useState(null);
+  const [cameraKey, setCameraKey] = useState(0); // bumped only by Retry
+  const [cameraReady, setCameraReady] = useState(false);
+  const [slowStart, setSlowStart] = useState(false);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => setAppActive(state === 'active'));
+    return () => sub.remove();
+  }, []);
+
+  // Mount the preview shortly after the screen settles: starting the camera while the
+  // screen is still being attached is a known cause of a black preview on Android
+  const [mountCamera, setMountCamera] = useState(false);
+  useEffect(() => {
+    if (!(isFocused && appActive)) {
+      setMountCamera(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setMountCamera(true), 350);
+    return () => clearTimeout(timer);
+  }, [isFocused, appActive]);
+
+  const showCamera = mountCamera;
+
+  // Unmounting on blur already gives a fresh camera on return; just reset the status here
+  useEffect(() => {
+    setCameraReady(false);
+    setSlowStart(false);
+    if (!showCamera) return undefined;
+    setCameraError(null);
+    const timer = setTimeout(() => setSlowStart(true), 5000);
+    return () => clearTimeout(timer);
+  }, [showCamera, cameraKey]);
 
   const filteredClasses = YOLO_CLASSES.filter((item) => {
     if (!searchQuery.trim()) return true;
@@ -69,10 +112,11 @@ export default function ScanScreen({ navigation }) {
   };
 
   // Handle classification of any image URI (viewfinder, camera app, or gallery)
-  const classifyImageUri = async (imageUri) => {
-    if (!imageUri) return;
+  const classifyImageUri = async (rawUri, width, height) => {
+    if (!rawUri) return;
     setLoading(true);
     setDetection(null);
+    const imageUri = await preparePhoto(rawUri, width, height);
 
     try {
       const formData = new FormData();
@@ -81,11 +125,8 @@ export default function ScanScreen({ navigation }) {
         const blob = await res.blob();
         formData.append('file', blob, 'waste_scan.jpg');
       } else {
-        formData.append('file', {
-          uri: imageUri,
-          type: 'image/jpeg',
-          name: 'waste_scan.jpg',
-        });
+        // Expo's fetch only accepts real Blob-like parts, not RN's { uri, type, name } objects
+        formData.append('file', new File(imageUri));
       }
 
       const response = await fetch(API_URL, {
@@ -166,7 +207,7 @@ export default function ScanScreen({ navigation }) {
         quality: 0.8,
       });
       if (!result.canceled && result.assets && result.assets[0]?.uri) {
-        await classifyImageUri(result.assets[0].uri);
+        await classifyImageUri(result.assets[0].uri, result.assets[0].width, result.assets[0].height);
       }
     } catch (err) {
       console.warn('Snap error:', err);
@@ -191,7 +232,7 @@ export default function ScanScreen({ navigation }) {
         quality: 0.8,
       });
       if (!result.canceled && result.assets && result.assets[0]?.uri) {
-        await classifyImageUri(result.assets[0].uri);
+        await classifyImageUri(result.assets[0].uri, result.assets[0].width, result.assets[0].height);
       }
     } catch (err) {
       console.warn('Gallery upload error:', err);
@@ -211,7 +252,7 @@ export default function ScanScreen({ navigation }) {
         skipProcessing: true,
       });
       if (photo?.uri) {
-        await classifyImageUri(photo.uri);
+        await classifyImageUri(photo.uri, photo.width, photo.height);
       } else {
         handleSnapCamera();
       }
@@ -255,7 +296,44 @@ export default function ScanScreen({ navigation }) {
       {permission?.granted ? (
         <>
           {/* 1. CameraView is self-closing to avoid child-rendering warnings */}
-          <CameraView ref={cameraRef} style={StyleSheet.absoluteFillObject} facing="back" />
+          {showCamera ? (
+            <CameraView
+              key={cameraKey}
+              ref={cameraRef}
+              style={StyleSheet.absoluteFillObject}
+              facing="back"
+              onCameraReady={() => {
+                console.log('[scan] camera ready');
+                setCameraReady(true);
+              }}
+              onMountError={(e) => {
+                console.warn('[scan] camera failed to start:', e?.message);
+                setCameraError(e?.message || 'Camera failed to start');
+              }}
+            />
+          ) : null}
+
+          {cameraError || (showCamera && !cameraReady && slowStart) ? (
+            <View style={styles.cameraErrorBox} pointerEvents="box-none">
+              <Ionicons name="videocam-off-outline" size={30} color="#FFFFFF" />
+              <Text style={styles.cameraErrorText}>
+                {cameraError
+                  ? "Camera couldn't start."
+                  : 'Camera is taking too long to start.'}
+                {'\n'}Check that Camera access is switched on in your phone's quick settings, then tap Retry. You can
+                also use Camera or Upload below.
+              </Text>
+              <TouchableOpacity
+                style={styles.cameraRetryBtn}
+                onPress={() => {
+                  setCameraError(null);
+                  setCameraKey((k) => k + 1);
+                }}
+              >
+                <Text style={styles.cameraRetryText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
           {/* 2. All overlay UI elements positioned as siblings on top */}
           {/* Top Header Controls */}
@@ -321,7 +399,7 @@ export default function ScanScreen({ navigation }) {
           <View
             style={[
               styles.footer,
-              { bottom: Math.max(insets.bottom + 75, 95) },
+              { bottom: Math.max(insets.bottom + 24, 32) },
             ]}
             pointerEvents="box-none"
           >
@@ -371,7 +449,7 @@ export default function ScanScreen({ navigation }) {
         </>
       ) : (
         /* Permission / Alternate Scan Hub */
-        <View style={[styles.permissionContainer, { paddingBottom: Math.max(insets.bottom + 85, 110) }]}>
+        <View style={[styles.permissionContainer, { paddingBottom: Math.max(insets.bottom + 24, 32) }]}>
           <TouchableOpacity
             style={{
               position: 'absolute',
@@ -544,6 +622,24 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000',
   },
+  cameraErrorBox: {
+    position: 'absolute',
+    top: '30%',
+    left: 32,
+    right: 32,
+    alignItems: 'center',
+    zIndex: 5,
+  },
+  cameraErrorText: { color: '#FFFFFF', fontSize: 14, textAlign: 'center', marginTop: 10, lineHeight: 20 },
+  cameraRetryBtn: {
+    marginTop: 14,
+    paddingHorizontal: 22,
+    paddingVertical: 9,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+  },
+  cameraRetryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
   topControls: {
     position: 'absolute',
     top: 50,
