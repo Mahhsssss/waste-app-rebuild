@@ -50,7 +50,7 @@ export default function WelcomeScreen({ onNavigate }) {
       <View style={[globalStyles.welcomeContainer, { paddingBottom: Math.max(insets.bottom + 12, 20) }]}>
         {/* Main Content Card / Header */}
         <View style={globalStyles.welcomeTopSection}>
-          <EcoLogo size={110} showTitle={true} />
+          <EcoLogo size={110} />
 
           <View style={globalStyles.welcomeTextContainer}>
             <Text style={globalStyles.welcomeHeading}>Explore the app</Text>

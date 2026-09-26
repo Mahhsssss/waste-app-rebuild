@@ -67,7 +67,7 @@ export default function PrivacyScreen({ navigation }) {
               <Ionicons name="shield-checkmark" size={32} color="#16A34A" style={{ marginBottom: 6 }} />
               <Text style={styles.bannerTitle}>Your Data & Privacy Protected</Text>
               <Text style={styles.bannerText}>
-                EcoShift is committed to preserving citizen privacy while fostering civic sustainability and responsible waste management.
+                साफ़ is committed to preserving citizen privacy while fostering civic sustainability and responsible waste management.
               </Text>
             </View>
 
@@ -84,7 +84,7 @@ export default function PrivacyScreen({ navigation }) {
             ))}
 
             <TouchableOpacity style={styles.doneBtn} onPress={() => navigation.goBack()}>
-              <Text style={styles.doneBtnText}>Back to EcoShift</Text>
+              <Text style={styles.doneBtnText}>Back to साफ़</Text>
             </TouchableOpacity>
           </ScrollView>
         </View>

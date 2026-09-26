@@ -1,5 +1,5 @@
 -- ==========================================================
--- Scan history, dump reports and report photos for EcoShift
+-- Scan history, dump reports and report photos for साफ़
 -- Run this once in the Supabase SQL Editor:
 -- https://supabase.com/dashboard/project/_/sql
 -- Safe to re-run: it only creates what is missing.

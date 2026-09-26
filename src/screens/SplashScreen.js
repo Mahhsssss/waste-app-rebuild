@@ -21,9 +21,9 @@ export default function SplashScreen({ onFinish }) {
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
       <Image
-        source={require('../../assets/dummylogofinal.png')} 
-        style={styles.logo}
-        resizeMode="contain"
+        source={require('../../assets/saaf-splash.jpg')}
+        style={styles.splash}
+        resizeMode="cover"
       />
     </Animated.View>
   );
@@ -35,12 +35,11 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     width: '100%',
-    backgroundColor: '#65a30d',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: '#1b5e1f', // matches the edge of the splash artwork
   },
-  logo: {
-    width: 200,
-    height: 200,
+  // Artwork is phone-shaped with the name in the middle, so covering the screen never crops the name
+  splash: {
+    flex: 1,
+    width: '100%',
   },
 });

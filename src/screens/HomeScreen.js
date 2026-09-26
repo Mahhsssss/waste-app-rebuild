@@ -126,10 +126,7 @@ export default function HomeScreen({ navigation }) {
             </TouchableOpacity>
 
             <View style={styles.brandContainer}>
-              <Text style={styles.brandTitle}>
-                Eco<Text style={styles.brandSub}>Shift</Text>
-              </Text>
-              <Text style={styles.locationMeta}>HAZARD & IMPACT DISPATCHES</Text>
+              <Text style={styles.brandTitle}>साफ़</Text>
             </View>
 
             {/* Same width as the menu button so the title stays centred */}
@@ -448,7 +445,7 @@ export default function HomeScreen({ navigation }) {
               <Ionicons name="log-out-outline" size={32} color="#DC2626" />
             </View>
 
-            <Text style={styles.logoutModalTitle}>Log Out of EcoShift?</Text>
+            <Text style={styles.logoutModalTitle}>Log Out of साफ़?</Text>
             <Text style={styles.logoutModalSub}>
               Are you sure you want to log out? You will be returned to the welcome screen.
             </Text>
@@ -517,9 +514,8 @@ const styles = StyleSheet.create({
   },
   menuIconBtn: { width: 40, height: 40, borderRadius: radius.full, backgroundColor: colors.primary50, justifyContent: 'center', alignItems: 'center' },
   brandContainer: { alignItems: 'center' },
-  brandTitle: { fontSize: 22, fontWeight: '800', color: colors.primary800, letterSpacing: -0.5 },
-  brandSub: { color: colors.primary600 },
-  locationMeta: { fontSize: 9, fontWeight: '800', color: colors.primary600, letterSpacing: 1 },
+  // Devanagari needs a taller line so the top bar and the nukta below aren't clipped
+  brandTitle: { fontSize: 32, lineHeight: 44, fontWeight: '800', color: colors.primary800 },
   topBarSpacer: { width: 40, height: 40 },
   scrollViewStyle: { flex: 1 },
   scrollContentContainer: { paddingTop: 4 },

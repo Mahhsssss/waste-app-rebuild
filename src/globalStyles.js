@@ -1,8 +1,8 @@
 import { StyleSheet, Platform } from 'react-native';
 
 /**
- * EcoShift Design System Tokens
- * Source: Waste Management EcoShift Design System Reference
+ * साफ़ Design System Tokens
+ * Source: Waste Management साफ़ Design System Reference
  */
 export const colors = {
     // Primary - Eco Green Palette
@@ -276,7 +276,7 @@ export const globalStyles = StyleSheet.create({
         marginLeft: spacing.sm,
     },
 
-    // Checkbox (EcoShift Design System: Primary/600 active state)
+    // Checkbox (साफ़ Design System: Primary/600 active state)
     checkboxRow: {
         flexDirection: 'row',
         alignItems: 'center',

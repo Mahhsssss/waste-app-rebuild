@@ -286,7 +286,7 @@ export default function ProfileScreen({ navigation }) {
               <Ionicons name="log-out-outline" size={32} color="#DC2626" />
             </View>
 
-            <Text style={styles.logoutModalTitle}>Log Out of EcoShift?</Text>
+            <Text style={styles.logoutModalTitle}>Log Out of साफ़?</Text>
             <Text style={styles.logoutModalSub}>
               Are you sure you want to log out? You will be returned to the login & welcome screen.
             </Text>

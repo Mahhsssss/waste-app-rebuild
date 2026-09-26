@@ -27,7 +27,7 @@ export default function TermsScreen({ navigation }) {
     {
       title: '3. Municipal Authority Communication',
       content:
-        'EcoShift facilitates communication between citizens and city municipal corporations or pollution control boards via standardized email templates. EcoShift acts solely as a technological facilitator and does not guarantee municipal response times or enforcement schedules.',
+        'साफ़ facilitates communication between citizens and city municipal corporations or pollution control boards via standardized email templates. साफ़ acts solely as a technological facilitator and does not guarantee municipal response times or enforcement schedules.',
     },
     {
       title: '4. User Conduct & Photo Content',
@@ -37,7 +37,7 @@ export default function TermsScreen({ navigation }) {
     {
       title: '5. Limitation of Liability',
       content:
-        'Under no circumstances shall EcoShift or its developers be held liable for personal injury, property damage, or chemical exposure incurred while collecting, photographing, or handling hazardous municipal waste.',
+        'Under no circumstances shall साफ़ or its developers be held liable for personal injury, property damage, or chemical exposure incurred while collecting, photographing, or handling hazardous municipal waste.',
     },
     {
       title: '6. Amendments to Terms',
@@ -72,10 +72,10 @@ export default function TermsScreen({ navigation }) {
           >
             <View style={styles.introCard}>
               <Ionicons name="document-text-outline" size={32} color={colors.primary800} style={{ marginBottom: 8 }} />
-              <Text style={styles.introTitle}>EcoShift Civic Agreement</Text>
+              <Text style={styles.introTitle}>साफ़ Civic Agreement</Text>
               <Text style={styles.introDate}>Last Updated: September 2026 ‪ Version 2.4</Text>
               <Text style={styles.introBody}>
-                Please read these terms carefully before utilizing the waste classification, dump reporting, and recycling navigation features of EcoShift.
+                Please read these terms carefully before utilizing the waste classification, dump reporting, and recycling navigation features of साफ़.
               </Text>
             </View>
 

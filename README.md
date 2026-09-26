@@ -1,6 +1,8 @@
 <div align="center">
 
-# ♻️ EcoShift
+<img src="assets/saaf-logo.png" width="120" alt="साफ़ logo" />
+
+# साफ़
 
 **Point your phone at a piece of waste. Learn what it is, which bin it belongs in, and where to drop it off.**
 
@@ -18,7 +20,7 @@ A React Native (Expo) app that helps people in Mumbai sort waste properly, find 
 
 ## Contents
 
-- [Why EcoShift](#why-ecoshift)
+- [Why साफ़](#why-साफ़)
 - [Features](#features)
 - [How a scan works](#how-a-scan-works)
 - [Tech stack](#tech-stack)
@@ -32,9 +34,9 @@ A React Native (Expo) app that helps people in Mumbai sort waste properly, find 
 
 ---
 
-## Why EcoShift
+## Why साफ़
 
-A lot of household waste could be recycled, but it ends up mixed in one bin because people don't know **what goes where** or **who takes it**. EcoShift turns that into a 10-second habit:
+A lot of household waste could be recycled, but it ends up mixed in one bin because people don't know **what goes where** or **who takes it**. साफ़ turns that into a 10-second habit:
 
 1. **Scan** the item.
 2. **Get** the right bin colour, step-by-step disposal advice, and the local recycling route (kabadiwalas, municipal dry-waste centres, recyclers).
@@ -81,7 +83,7 @@ If detection fails or finds nothing, the user can still pick the item from the 5
 | Backend | [Supabase](https://supabase.com/): Auth (email, Google OAuth) and Postgres (`categories`, `markers`) |
 | Waste detection | YOLO object-detection model served on [Modal](https://modal.com/) |
 | Maps | [Leaflet](https://leafletjs.com/) in a WebView with OpenStreetMap and Esri tiles (no API key needed) |
-| Device APIs | `expo-camera`, `expo-image-picker`, `expo-location`, `expo-image-manipulator`, `expo-file-system`, `expo-secure-store` |
+| Device APIs | `expo-image-picker`, `expo-location`, `expo-image-manipulator`, `expo-file-system`, `expo-secure-store` |
 
 ---
 
@@ -179,8 +181,7 @@ We push straight to `master`, so please keep commits clean:
 
 ## Known issues
 
-- **Scanner preview:** on some Android phones the live camera preview stays black even though photos are captured correctly. Use the **Camera** or **Upload** buttons on the scan screen in the meantime.
-- **Detection API:** the scan server is being fixed and may return an error. The 59-item catalogue on the scan screen still gives full disposal advice.
+- **Google sign-in:** needs the Google client ID and secret set in Supabase (Authentication → Providers → Google). Email and guest login work.
 
 ---
 

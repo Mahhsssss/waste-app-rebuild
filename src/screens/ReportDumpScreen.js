@@ -191,12 +191,12 @@ export default function ReportDumpScreen({ navigation, route }) {
     body += `• Coordinates: ${coordsText}\n`;
     body += `• Map: https://www.google.com/maps?q=${coords.latitude},${coords.longitude}\n`;
     body += `• Timestamp: ${new Date().toLocaleString()}\n`;
-    body += `• Photo: ${photoUri ? 'Recorded in the EcoShift app' : 'Not attached'}\n\n`;
+    body += `• Photo: ${photoUri ? 'Recorded in the साफ़ app' : 'Not attached'}\n\n`;
     if (additionalMessage.trim()) {
       body += `CITIZEN NOTES:\n"${additionalMessage.trim()}"\n\n`;
     }
     body += `Under the Solid Waste Management Rules, please dispatch a waste collection vehicle or clean-up squad promptly.\n\n`;
-    body += `Regards,\nConcerned Citizen (via EcoShift)`;
+    body += `Regards,\nConcerned Citizen (via साफ़)`;
     return body;
   };
 
@@ -216,7 +216,7 @@ export default function ReportDumpScreen({ navigation, route }) {
 
   const handleWhatsAppReport = () => {
     const text =
-      `*EcoShift Dump Report*\n` +
+      `*साफ़ Dump Report*\n` +
       `*Location:* ${location}\n` +
       `*GPS:* ${coordsText}\n` +
       `*Waste type:* ${wasteType}\n` +
