@@ -1,26 +1,24 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
-  Pressable,
   ActivityIndicator,
   TextInput,
   Modal,
   FlatList,
+  Image,
+  ScrollView,
   Platform,
-  AppState,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useIsFocused } from '@react-navigation/native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { File } from 'expo-file-system';
 import { preparePhoto } from '../utils/photo';
 import { Ionicons } from '@expo/vector-icons';
 
-import globalStyles, { colors, spacing, radius } from '../globalStyles';
+import { colors, spacing, radius } from '../globalStyles';
 import showAlert from '../utils/alert';
 import {
   YOLO_CLASSES,
@@ -32,53 +30,20 @@ import { addHistoryItem } from '../services/historyService';
 
 const API_URL = 'https://mahhsssss--waste-detection-detect.modal.run';
 
+const TIPS = [
+  { icon: 'cube-outline', text: 'One item at a time' },
+  { icon: 'sunny-outline', text: 'Good light, no glare' },
+  { icon: 'scan-outline', text: 'Fill most of the frame' },
+];
+
+// Photos come from the phone's own camera app. The in-app live preview (expo-camera)
+// shows a black screen in Expo Go on some Android phones, while the camera app works everywhere.
 export default function ScanScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef(null);
   const [loading, setLoading] = useState(false);
-  const [detection, setDetection] = useState(null);
+  const [photoUri, setPhotoUri] = useState(null);
   const [showTestPicker, setShowTestPicker] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Only one camera preview can hold the camera at a time. Tabs stay mounted, so keep the
-  // preview mounted only while this tab is focused and the app is in the foreground;
-  // otherwise it goes black after another screen (or the system camera) takes the camera.
-  const isFocused = useIsFocused();
-  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
-  const [cameraError, setCameraError] = useState(null);
-  const [cameraKey, setCameraKey] = useState(0); // bumped only by Retry
-  const [cameraReady, setCameraReady] = useState(false);
-  const [slowStart, setSlowStart] = useState(false);
-
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (state) => setAppActive(state === 'active'));
-    return () => sub.remove();
-  }, []);
-
-  // Mount the preview shortly after the screen settles: starting the camera while the
-  // screen is still being attached is a known cause of a black preview on Android
-  const [mountCamera, setMountCamera] = useState(false);
-  useEffect(() => {
-    if (!(isFocused && appActive)) {
-      setMountCamera(false);
-      return undefined;
-    }
-    const timer = setTimeout(() => setMountCamera(true), 350);
-    return () => clearTimeout(timer);
-  }, [isFocused, appActive]);
-
-  const showCamera = mountCamera;
-
-  // Unmounting on blur already gives a fresh camera on return; just reset the status here
-  useEffect(() => {
-    setCameraReady(false);
-    setSlowStart(false);
-    if (!showCamera) return undefined;
-    setCameraError(null);
-    const timer = setTimeout(() => setSlowStart(true), 5000);
-    return () => clearTimeout(timer);
-  }, [showCamera, cameraKey]);
 
   const filteredClasses = YOLO_CLASSES.filter((item) => {
     if (!searchQuery.trim()) return true;
@@ -111,14 +76,14 @@ export default function ScanScreen({ navigation }) {
     fileInput.click();
   };
 
-  // Handle classification of any image URI (viewfinder, camera app, or gallery)
+  // Handle classification of any image URI (camera app or gallery)
   const classifyImageUri = async (rawUri, width, height) => {
     if (!rawUri) return;
+    setPhotoUri(rawUri);
     setLoading(true);
-    setDetection(null);
-    const imageUri = await preparePhoto(rawUri, width, height);
 
     try {
+      const imageUri = await preparePhoto(rawUri, width, height);
       const formData = new FormData();
       if (Platform.OS === 'web') {
         const res = await fetch(imageUri);
@@ -140,7 +105,6 @@ export default function ScanScreen({ navigation }) {
       }
 
       const result = await response.json();
-      setDetection(result);
 
       const detectedClass =
         result.class ||
@@ -173,7 +137,6 @@ export default function ScanScreen({ navigation }) {
       }
     } catch (e) {
       console.warn('Classification error:', e);
-      setDetection({ class: 'Connection Error', confidence: 0 });
       const is500 = e?.message?.includes('500');
       showAlert(
         is500 ? 'Backend Model Error (HTTP 500)' : 'Detection Notice',
@@ -187,82 +150,66 @@ export default function ScanScreen({ navigation }) {
       );
     } finally {
       setLoading(false);
+      setPhotoUri(null);
     }
   };
 
-  // Direct Camera App Snap
+  // Opens the phone's camera app. No crop step: Android's crop screen often never returns the photo.
   const handleSnapCamera = async () => {
+    if (loading) return;
+    if (Platform.OS === 'web') {
+      triggerWebFileInput('environment');
+      return;
+    }
     try {
-      if (Platform.OS === 'web') {
-        triggerWebFileInput('environment');
-        return;
-      }
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (perm.status !== 'granted') {
         showAlert('Permission Denied', 'Camera access is required to snap waste items.');
         return;
       }
-      const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        quality: 0.8,
-      });
+      const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
       if (!result.canceled && result.assets && result.assets[0]?.uri) {
         await classifyImageUri(result.assets[0].uri, result.assets[0].width, result.assets[0].height);
       }
     } catch (err) {
-      console.warn('Snap error:', err);
-      triggerWebFileInput('environment');
+      console.warn('Camera error:', err);
+      showAlert('Camera unavailable', "Your camera couldn't open. You can upload a photo from your gallery instead.");
     }
   };
 
   // Gallery / File Upload
   const handlePickGallery = async () => {
+    if (loading) return;
+    if (Platform.OS === 'web') {
+      triggerWebFileInput();
+      return;
+    }
     try {
-      if (Platform.OS === 'web') {
-        triggerWebFileInput();
-        return;
-      }
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (perm.status !== 'granted') {
         showAlert('Permission Denied', 'Gallery access is required to select photos.');
         return;
       }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        allowsEditing: true,
-        quality: 0.8,
-      });
+      const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8 });
       if (!result.canceled && result.assets && result.assets[0]?.uri) {
         await classifyImageUri(result.assets[0].uri, result.assets[0].width, result.assets[0].height);
       }
     } catch (err) {
       console.warn('Gallery upload error:', err);
-      triggerWebFileInput();
+      showAlert('Gallery unavailable', "Your gallery couldn't open. Please try again.");
     }
   };
 
-  // Viewfinder Shutter
-  const takePicture = async () => {
-    const cam = cameraRef.current || cameraRef;
-    if (!cam || loading) return;
-
-    try {
-      setLoading(true);
-      const photo = await cam.takePictureAsync({
-        quality: 0.8,
-        skipProcessing: true,
-      });
-      if (photo?.uri) {
-        await classifyImageUri(photo.uri, photo.width, photo.height);
-      } else {
-        handleSnapCamera();
-      }
-    } catch (err) {
-      console.warn('Viewfinder snap failed, falling back to camera picker:', err);
-      handleSnapCamera();
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Open the camera straight away the first time the scanner opens (phones only;
+  // browsers block file pickers that the user didn't tap)
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (Platform.OS === 'web' || autoOpened.current) return undefined;
+    autoOpened.current = true;
+    const timer = setTimeout(handleSnapCamera, 350); // let the screen finish opening first
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Handle opening dynamic page for any class name
   const handleSelectCategory = async (className) => {
@@ -292,257 +239,102 @@ export default function ScanScreen({ navigation }) {
   };
 
   return (
-    <View style={styles.container}>
-      {permission?.granted ? (
-        <>
-          {/* 1. CameraView is self-closing to avoid child-rendering warnings */}
-          {showCamera ? (
-            <CameraView
-              key={cameraKey}
-              ref={cameraRef}
-              style={StyleSheet.absoluteFillObject}
-              facing="back"
-              onCameraReady={() => {
-                console.log('[scan] camera ready');
-                setCameraReady(true);
-              }}
-              onMountError={(e) => {
-                console.warn('[scan] camera failed to start:', e?.message);
-                setCameraError(e?.message || 'Camera failed to start');
-              }}
-            />
-          ) : null}
-
-          {cameraError || (showCamera && !cameraReady && slowStart) ? (
-            <View style={styles.cameraErrorBox} pointerEvents="box-none">
-              <Ionicons name="videocam-off-outline" size={30} color="#FFFFFF" />
-              <Text style={styles.cameraErrorText}>
-                {cameraError
-                  ? "Camera couldn't start."
-                  : 'Camera is taking too long to start.'}
-                {'\n'}Check that Camera access is switched on in your phone's quick settings, then tap Retry. You can
-                also use Camera or Upload below.
-              </Text>
-              <TouchableOpacity
-                style={styles.cameraRetryBtn}
-                onPress={() => {
-                  setCameraError(null);
-                  setCameraKey((k) => k + 1);
-                }}
-              >
-                <Text style={styles.cameraRetryText}>Retry</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
-
-          {/* 2. All overlay UI elements positioned as siblings on top */}
-          {/* Top Header Controls */}
-          <View
-            style={[
-              styles.topControls,
-              { top: Math.max(insets.top, 16) + 8 },
-            ]}
-            pointerEvents="box-none"
-          >
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+      <View style={styles.root}>
+        <View style={styles.maxContainer}>
+          {/* Header */}
+          <View style={styles.header}>
             <TouchableOpacity
-              style={styles.circleButton}
               onPress={() => navigation.goBack()}
+              style={styles.headerBtn}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
-              <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+              <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
             </TouchableOpacity>
-
-            {/* Quick Category Picker Button */}
-            <TouchableOpacity
-              style={styles.testPickerButton}
-              onPress={() => setShowTestPicker(true)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name="list" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.testPickerText}>All 59 Items</Text>
-            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Scan waste</Text>
+            <View style={styles.headerBtn} />
           </View>
 
-          {/* Reticle / Viewfinder Frame */}
-          <View style={styles.viewfinderContainer} pointerEvents="none">
-            <View style={styles.viewfinderFrame}>
-              <View style={[styles.corner, styles.topLeft]} />
-              <View style={[styles.corner, styles.topRight]} />
-              <View style={[styles.corner, styles.bottomLeft]} />
-              <View style={[styles.corner, styles.bottomRight]} />
-            </View>
-            <Text style={styles.viewfinderHint}>Center scrap item in frame</Text>
-          </View>
-
-          {/* Detection Status Overlay */}
-          {detection && (
-            <View
-              style={[
-                styles.resultBox,
-                { top: Math.max(insets.top, 16) + 68 },
-              ]}
-              pointerEvents="box-none"
-            >
-              <Text style={styles.label}>
-                {detection.class !== 'Connection Error' && detection.class !== 'nothing' ? '🗑️ ' : '⚠️ '}
-                {detection.class ? String(detection.class).toUpperCase() : 'NO ITEM'}
-              </Text>
-              {detection.confidence > 0 && (
-                <Text style={styles.conf}>
-                  {(detection.confidence * 100).toFixed(1)}% Confidence
-                </Text>
-              )}
-            </View>
-          )}
-
-          {/* Footer Multi-Option Dock (Live Frame Scan, Direct Camera Snap, Gallery Upload) */}
-          <View
-            style={[
-              styles.footer,
-              { bottom: Math.max(insets.bottom + 24, 32) },
-            ]}
-            pointerEvents="box-none"
-          >
-            <View style={styles.footerRow}>
-              {/* Direct Camera App Snap */}
-              <TouchableOpacity
-                style={styles.secondaryDockBtn}
-                onPress={handleSnapCamera}
-                disabled={loading}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="camera" size={22} color="#FFFFFF" />
-                <Text style={styles.secondaryDockBtnText}>Camera</Text>
-              </TouchableOpacity>
-
-              {/* Primary Viewfinder Shutter */}
-              <Pressable
-                style={[styles.scanButton, loading && styles.disabledButton]}
-                onPress={takePicture}
-                disabled={loading}
-              >
-                {loading ? (
-                  <View style={styles.loadingRow}>
-                    <ActivityIndicator color="#FFFFFF" size="small" style={{ marginRight: 6 }} />
-                    <Text style={styles.scanText}>Scanning...</Text>
-                  </View>
-                ) : (
-                  <View style={styles.loadingRow}>
-                    <Ionicons name="scan" size={20} color="#FFFFFF" style={{ marginRight: 6 }} />
-                    <Text style={styles.scanText}>Scan Frame</Text>
-                  </View>
-                )}
-              </Pressable>
-
-              {/* Upload from Gallery / Files */}
-              <TouchableOpacity
-                style={styles.secondaryDockBtn}
-                onPress={handlePickGallery}
-                disabled={loading}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="images" size={22} color="#FFFFFF" />
-                <Text style={styles.secondaryDockBtnText}>Upload</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </>
-      ) : (
-        /* Permission / Alternate Scan Hub */
-        <View style={[styles.permissionContainer, { paddingBottom: Math.max(insets.bottom + 24, 32) }]}>
-          <TouchableOpacity
-            style={{
-              position: 'absolute',
-              top: Math.max(insets.top, 16) + 8,
-              left: 20,
-              zIndex: 10,
-              padding: 8,
-            }}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            onPress={() => navigation.goBack()}
-          >
-            <Ionicons name="arrow-back" size={26} color={colors.primary800} />
-          </TouchableOpacity>
-
-          <Ionicons name="camera-outline" size={64} color={colors.primary600} style={{ marginBottom: 14 }} />
-          <Text style={[styles.permissionTitle, { fontSize: 18, fontWeight: '700', color: colors.primary800, marginBottom: 8 }]}>
-            Waste Scanner Camera
-          </Text>
-          <Text style={[styles.permissionSub, { fontSize: 13, color: colors.textSecondary, marginBottom: 20, textAlign: 'center' }]}>
-            Allow camera access for live scanning, or choose one of the alternative options below to scan and classify waste:
-          </Text>
-
-          <TouchableOpacity
-            style={[globalStyles.primaryButton, { width: '100%', marginBottom: 12 }]}
-            onPress={requestPermission}
-          >
-            <Text style={globalStyles.primaryButtonText}>Enable Live Viewfinder</Text>
-          </TouchableOpacity>
-
-          <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginBottom: 12 }}>
-            <TouchableOpacity
-              style={{
-                flex: 1,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: '#F0FDF4',
-                borderColor: colors.primary800,
-                borderWidth: 1.5,
-                borderRadius: 12,
-                paddingVertical: 12,
-              }}
-              onPress={handleSnapCamera}
-            >
-              <Ionicons name="camera" size={18} color={colors.primary800} style={{ marginRight: 6 }} />
-              <Text style={{ fontSize: 13, fontWeight: '700', color: colors.primary800 }}>Snap Photo</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={{
-                flex: 1,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: '#F0FDF4',
-                borderColor: colors.primary800,
-                borderWidth: 1.5,
-                borderRadius: 12,
-                paddingVertical: 12,
-              }}
-              onPress={handlePickGallery}
-            >
-              <Ionicons name="images" size={18} color={colors.primary800} style={{ marginRight: 6 }} />
-              <Text style={{ fontSize: 13, fontWeight: '700', color: colors.primary800 }}>Upload Image</Text>
-            </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity
-            style={{
-              width: '100%',
-              alignItems: 'center',
-              paddingVertical: 13,
-              borderRadius: 12,
-              backgroundColor: '#F3F4F6',
-              borderWidth: 1,
-              borderColor: '#E5E7EB',
-            }}
-            onPress={() => setShowTestPicker(true)}
-            activeOpacity={0.7}
-          >
-            <Text style={{ fontSize: 14, fontWeight: '700', color: '#1B5E20' }}>
-              📋 Browse All 59 Waste Types
+          <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+            <Text style={styles.title}>What are you throwing away?</Text>
+            <Text style={styles.sub}>
+              Take a photo of the item and we'll tell you what it is and how to dispose of it.
             </Text>
-          </TouchableOpacity>
-        </View>
-      )}
 
-      {/* Universal Loading Overlay */}
-      {loading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#FFFFFF" />
+            {/* Photo area */}
+            {photoUri ? (
+              <View style={styles.photoPreview}>
+                <Image source={{ uri: photoUri }} style={styles.photoImage} resizeMode="cover" resizeMethod="resize" />
+                <View style={styles.photoScrim}>
+                  <ActivityIndicator size="large" color={colors.white} />
+                  <Text style={styles.photoScrimText}>Identifying your item…</Text>
+                </View>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.photoDrop} onPress={handleSnapCamera} activeOpacity={0.85} disabled={loading}>
+                <View style={styles.photoDropIcon}>
+                  <Ionicons name="camera-outline" size={34} color={colors.primary700} />
+                </View>
+                <Text style={styles.photoDropTitle}>Tap to take a photo</Text>
+                <Text style={styles.photoDropSub}>Your phone's camera will open</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Tips */}
+            <View style={styles.tipsRow}>
+              {TIPS.map((tip) => (
+                <View key={tip.text} style={styles.tip}>
+                  <Ionicons name={tip.icon} size={18} color={colors.primary700} />
+                  <Text style={styles.tipText}>{tip.text}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Catalog */}
+            <TouchableOpacity
+              style={styles.catalogCard}
+              onPress={() => setShowTestPicker(true)}
+              activeOpacity={0.8}
+              disabled={loading}
+            >
+              <View style={styles.catalogIcon}>
+                <Ionicons name="list" size={20} color={colors.primary700} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.catalogTitle}>Know what it is?</Text>
+                <Text style={styles.catalogSub}>Pick it from all 59 waste types</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.placeholder} />
+            </TouchableOpacity>
+          </ScrollView>
+
+          {/* Pinned bottom actions */}
+          <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, spacing.base) }]}>
+            <TouchableOpacity
+              style={[styles.outlineBtn, loading && styles.btnDisabled]}
+              onPress={handlePickGallery}
+              activeOpacity={0.8}
+              disabled={loading}
+            >
+              <Ionicons name="images-outline" size={18} color={colors.primary800} style={{ marginRight: 6 }} />
+              <Text style={styles.outlineBtnText}>Gallery</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.primaryBtn, loading && styles.btnDisabled]}
+              onPress={handleSnapCamera}
+              activeOpacity={0.85}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator size="small" color={colors.white} style={{ marginRight: 8 }} />
+              ) : (
+                <Ionicons name="camera" size={18} color={colors.white} style={{ marginRight: 8 }} />
+              )}
+              <Text style={styles.primaryBtnText}>{loading ? 'Scanning…' : 'Take photo'}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      )}
+      </View>
 
       {/* 59 Waste Categories Catalog Modal */}
       <Modal visible={showTestPicker} animationType="slide" transparent={true}>
@@ -613,204 +405,129 @@ export default function ScanScreen({ navigation }) {
           </View>
         </View>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
-  cameraErrorBox: {
-    position: 'absolute',
-    top: '30%',
-    left: 32,
-    right: 32,
-    alignItems: 'center',
-    zIndex: 5,
-  },
-  cameraErrorText: { color: '#FFFFFF', fontSize: 14, textAlign: 'center', marginTop: 10, lineHeight: 20 },
-  cameraRetryBtn: {
-    marginTop: 14,
-    paddingHorizontal: 22,
-    paddingVertical: 9,
-    borderRadius: 999,
-    borderWidth: 1.5,
-    borderColor: '#FFFFFF',
-  },
-  cameraRetryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
-  topControls: {
-    position: 'absolute',
-    top: 50,
-    left: 20,
-    right: 20,
+  safeArea: { flex: 1, backgroundColor: colors.white },
+  root: { flex: 1, alignItems: 'center', backgroundColor: Platform.OS === 'web' ? '#f3f6f3' : colors.white },
+  maxContainer: { flex: 1, width: '100%', maxWidth: 600, backgroundColor: colors.white },
+
+  header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    zIndex: 20,
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.base,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
   },
-  circleButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+  headerBtn: { width: 36, height: 36, justifyContent: 'center' },
+  headerTitle: { fontSize: 17, fontWeight: '700', color: colors.textPrimary },
+
+  scrollContent: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.xl },
+  title: { fontSize: 22, fontWeight: '800', color: colors.textPrimary },
+  sub: { fontSize: 14, color: colors.textSecondary, marginTop: 4, marginBottom: spacing.lg, lineHeight: 20 },
+
+  // Photo
+  photoDrop: {
+    height: 280,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.base,
+    borderRadius: radius.xl,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: colors.primary100,
+    backgroundColor: '#F7FBF7',
+  },
+  photoDropIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: colors.primary50,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  testPickerButton: {
+  photoDropTitle: { marginTop: spacing.base, fontSize: 16, fontWeight: '700', color: colors.textPrimary },
+  photoDropSub: { marginTop: 4, fontSize: 13, color: colors.textSecondary },
+  photoPreview: { height: 280, borderRadius: radius.xl, overflow: 'hidden', backgroundColor: colors.surfaceAlt },
+  photoImage: { width: '100%', height: '100%' },
+  photoScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoScrimText: { marginTop: spacing.md, fontSize: 15, fontWeight: '700', color: colors.white },
+
+  // Tips
+  tipsRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.base },
+  tip: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xs,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surfaceAlt,
+  },
+  tipText: { marginTop: 6, fontSize: 12, fontWeight: '600', color: colors.textSecondary, textAlign: 'center' },
+
+  // Catalog
+  catalogCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(27, 94, 32, 0.85)',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
+    marginTop: spacing.lg,
+    padding: spacing.base,
+    borderRadius: radius.xl,
     borderWidth: 1,
-    borderColor: '#86EFAC',
+    borderColor: colors.border,
+    backgroundColor: colors.white,
   },
-  testPickerText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 13,
-  },
-
-  // Viewfinder
-  viewfinderContainer: {
-    flex: 1,
+  catalogIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.primary50,
     justifyContent: 'center',
     alignItems: 'center',
+    marginRight: spacing.md,
   },
-  viewfinderFrame: {
-    width: 260,
-    height: 260,
-    position: 'relative',
-  },
-  corner: {
-    position: 'absolute',
-    width: 32,
-    height: 32,
-    borderColor: '#84CC16',
-  },
-  topLeft: {
-    top: 0,
-    left: 0,
-    borderTopWidth: 4,
-    borderLeftWidth: 4,
-  },
-  topRight: {
-    top: 0,
-    right: 0,
-    borderTopWidth: 4,
-    borderRightWidth: 4,
-  },
-  bottomLeft: {
-    bottom: 0,
-    left: 0,
-    borderBottomWidth: 4,
-    borderLeftWidth: 4,
-  },
-  bottomRight: {
-    bottom: 0,
-    right: 0,
-    borderBottomWidth: 4,
-    borderRightWidth: 4,
-  },
-  viewfinderHint: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 12,
-  },
+  catalogTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary },
+  catalogSub: { marginTop: 2, fontSize: 13, color: colors.textSecondary },
 
-  // Detection Overlay
-  resultBox: {
-    position: 'absolute',
-    top: 110,
-    alignSelf: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 14,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 4,
-  },
-  label: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#1B5E20',
-  },
-  conf: {
-    fontSize: 12,
-    color: '#4B5563',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-
-  // Footer
-  footer: {
-    position: 'absolute',
-    bottom: 36,
-    left: 20,
-    right: 20,
-  },
-  footerRow: {
+  // Bottom bar
+  bottomBar: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.white,
   },
-  secondaryDockBtn: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  secondaryDockBtnText: {
-    color: '#FFFFFF',
-    fontSize: 9.5,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  scanButton: {
-    flex: 1,
-    backgroundColor: '#65A30D',
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 6,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
-  },
-  disabledButton: {
-    backgroundColor: '#4D7C0F',
-    opacity: 0.8,
-  },
-  loadingRow: {
+  outlineBtn: {
     flexDirection: 'row',
+    height: 50,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  scanText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
+  outlineBtnText: { fontSize: 15, fontWeight: '600', color: colors.primary800 },
+  primaryBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: radius.full,
+    backgroundColor: colors.primary800,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
+  primaryBtnText: { fontSize: 15, fontWeight: '700', color: colors.white },
+  btnDisabled: { opacity: 0.6 },
 
   // Modal
   modalOverlay: {
@@ -872,19 +589,6 @@ const styles = StyleSheet.create({
     color: '#1B1F1C',
     textTransform: 'capitalize',
   },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 999,
-  },
-  loadingOverlayText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-    marginTop: 12,
-  },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -899,25 +603,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#1F2937',
     padding: 0,
-  },
-  permissionContainer: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-  },
-  permissionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: colors.primary800,
-    marginBottom: 8,
-  },
-  permissionSub: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    marginBottom: 20,
-    textAlign: 'center',
-    lineHeight: 18,
   },
 });

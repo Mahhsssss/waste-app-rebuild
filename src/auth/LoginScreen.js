@@ -17,7 +17,8 @@ import '../global.css';
 import globalStyles, { colors } from '../globalStyles';
 import GoogleIcon from '../components/GoogleIcon';
 import { useAuth } from '../context/AuthContext';
-import { supabase } from '../services/supabase'; 
+import { supabase } from '../services/supabase';
+import { completeSignInFromUrl } from '../services/authService'; 
 
 export default function LoginScreen({ onNavigate }) {
   const insets = useSafeAreaInsets();
@@ -53,17 +54,18 @@ export default function LoginScreen({ onNavigate }) {
 
   // 2. Handle incoming deep link URLs when redirected back from Google browser
   useEffect(() => {
-    const handleDeepLink = async (event) => {
-      if (event?.url) {
-        await supabase.auth.exchangeCodeForSession(event.url);
-      }
+    // Only URLs carrying tokens, a code or an error do anything; other links are ignored
+    const finishFromUrl = (url) => {
+      if (!url) return;
+      completeSignInFromUrl(url).catch((err) => {
+        setErrorMessage(err.message || 'Sign-in failed');
+        setErrorType('error');
+      });
     };
 
-    const subscription = Linking.addEventListener('url', handleDeepLink);
+    const subscription = Linking.addEventListener('url', (event) => finishFromUrl(event?.url));
 
-    Linking.getInitialURL().then((url) => {
-      if (url) supabase.auth.exchangeCodeForSession(url);
-    });
+    Linking.getInitialURL().then(finishFromUrl);
 
     return () => subscription.remove();
   }, []);

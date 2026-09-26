@@ -132,9 +132,8 @@ export default function HomeScreen({ navigation }) {
               <Text style={styles.locationMeta}>HAZARD & IMPACT DISPATCHES</Text>
             </View>
 
-            <TouchableOpacity style={styles.reloadBtn} onPress={loadBlogs}>
-              <Ionicons name="refresh-outline" size={20} color={colors.primary800} />
-            </TouchableOpacity>
+            {/* Same width as the menu button so the title stays centred */}
+            <View style={styles.topBarSpacer} />
           </View>
 
           {/* Scrollable Content Area */}
@@ -521,7 +520,7 @@ const styles = StyleSheet.create({
   brandTitle: { fontSize: 22, fontWeight: '800', color: colors.primary800, letterSpacing: -0.5 },
   brandSub: { color: colors.primary600 },
   locationMeta: { fontSize: 9, fontWeight: '800', color: colors.primary600, letterSpacing: 1 },
-  reloadBtn: { width: 40, height: 40, borderRadius: radius.full, backgroundColor: colors.primary50, justifyContent: 'center', alignItems: 'center' },
+  topBarSpacer: { width: 40, height: 40 },
   scrollViewStyle: { flex: 1 },
   scrollContentContainer: { paddingTop: 4 },
   searchContainer: {

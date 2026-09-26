@@ -71,12 +71,37 @@ const supabaseAnonKey =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
   'sb_publishable_Bg1gkr0WEOmfxne13nhnMw_mcm0-PwL';
 
+// Web: note what a sign-in redirect brought back (tokens or an error) before the client
+// consumes and clears it from the address bar. Token values are never logged.
+const readWebAuthRedirect = () => {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  const params = new URLSearchParams(
+    [window.location.search.slice(1), window.location.hash.slice(1)].filter(Boolean).join('&')
+  );
+  const result = {
+    hasTokens: params.has('access_token'),
+    hasCode: params.has('code'),
+    error: params.get('error_description') || params.get('error') || null,
+  };
+  if (result.hasTokens || result.hasCode || result.error) {
+    console.log(
+      `[auth] returned from sign-in at ${window.location.origin}: tokens=${result.hasTokens} code=${result.hasCode} error=${result.error || 'none'}`
+    );
+    return result;
+  }
+  return null;
+};
+
+export const webAuthRedirect = readWebAuthRedirect();
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: ExpoSecureStoreAdapter,
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: false,
+    // On web, Google sign-in returns to the page with the session in the URL, so read it from there.
+    // Native apps get it from the deep link instead (see authService.signInWithGoogle).
+    detectSessionInUrl: Platform.OS === 'web',
   },
 });
 

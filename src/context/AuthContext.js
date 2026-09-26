@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import supabase, { ExpoSecureStoreAdapter } from '../services/supabase';
+import supabase, { ExpoSecureStoreAdapter, webAuthRedirect } from '../services/supabase';
+import showAlert from '../utils/alert';
 import {
   signUpWithEmail,
   signInWithEmail,
@@ -25,7 +26,16 @@ export const AuthProvider = ({ children }) => {
     // Get initial session (Supabase or stored Guest session)
     const initAuth = async () => {
       try {
-        const { data: { session: initialSession } } = await supabase.auth.getSession();
+        const { data: { session: initialSession }, error: sessionError } = await supabase.auth.getSession();
+        if (webAuthRedirect) {
+          console.log(
+            `[auth] after sign-in redirect: session=${initialSession?.user ? 'yes' : 'no'}${sessionError ? `, error=${sessionError.message}` : ''}`
+          );
+          const problem = webAuthRedirect.error || (!initialSession?.user && sessionError?.message);
+          if (problem) {
+            showAlert('Sign-in failed', String(problem).replace(/\+/g, ' '));
+          }
+        }
         if (initialSession?.user) {
           setSession(initialSession);
           setUser(initialSession.user);

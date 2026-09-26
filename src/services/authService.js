@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Platform, Linking } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
 import supabase from './supabase';
@@ -86,6 +86,7 @@ export async function signInWithGoogle() {
     // 1. Web handling
     if (Platform.OS === 'web') {
       const redirectUrl = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8081';
+      console.log(`[google] web sign-in started; Supabase should return to ${redirectUrl}`);
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
@@ -111,28 +112,70 @@ export async function signInWithGoogle() {
     });
 
     if (error) throw error;
+    if (!data?.url) throw new Error('Could not start Google sign-in.');
 
-    if (data?.url) {
-      const res = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
+    // On Android the redirect back to the app can arrive as a deep link instead of being
+    // handed to openAuthSessionAsync, so catch it here as well
+    let linkedUrl = null;
+    const linkSub = Linking.addEventListener('url', ({ url }) => {
+      if (url && url.startsWith(redirectUrl)) linkedUrl = url;
+    });
 
-      if (res.type === 'success' && res.url) {
-        const params = extractParamsFromUrl(res.url);
-        if (params.access_token && params.refresh_token) {
-          const { data: sessionData, error: sessionError } =
-            await supabase.auth.setSession({
-              access_token: params.access_token,
-              refresh_token: params.refresh_token,
-            });
-          if (sessionError) throw sessionError;
-          return { data: sessionData, error: null };
-        }
-      }
+    let res;
+    try {
+      res = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
+    } finally {
+      linkSub.remove();
     }
 
-    return { data: null, error: null };
+    const returnedUrl = res?.type === 'success' && res.url ? res.url : linkedUrl;
+    console.log(
+      `[google] browser result: ${res?.type}; returned to app: ${returnedUrl ? 'yes' : 'no'}; expected: ${redirectUrl}`
+    );
+
+    if (!returnedUrl) {
+      if (res?.type === 'cancel') return { data: null, error: null }; // user closed the browser
+      throw new Error(
+        "Google sign-in didn't return to the app. Make sure this app's address is allowed in Supabase (Authentication → URL Configuration → Redirect URLs)."
+      );
+    }
+
+    const result = await completeSignInFromUrl(returnedUrl);
+    if (!result.session) throw new Error('Google sign-in finished, but no login was received. Please try again.');
+    return { data: result, error: null };
   } catch (error) {
     return { data: null, error: error.message || 'Google sign-in failed' };
   }
+}
+
+/**
+ * Finishes a sign-in from a redirect URL: tokens in the URL (implicit flow),
+ * a one-time code (PKCE flow), or an error from Supabase / Google.
+ * Returns { session } or { session: null } when the URL has nothing to sign in with.
+ */
+export async function completeSignInFromUrl(url) {
+  const params = extractParamsFromUrl(url);
+
+  if (params.error || params.error_description) {
+    throw new Error((params.error_description || params.error).replace(/\+/g, ' '));
+  }
+
+  if (params.access_token && params.refresh_token) {
+    const { data, error } = await supabase.auth.setSession({
+      access_token: params.access_token,
+      refresh_token: params.refresh_token,
+    });
+    if (error) throw error;
+    return { session: data.session };
+  }
+
+  if (params.code) {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(params.code);
+    if (error) throw error;
+    return { session: data.session };
+  }
+
+  return { session: null };
 }
 
 /**
@@ -140,14 +183,18 @@ export async function signInWithGoogle() {
  */
 function extractParamsFromUrl(url) {
   const params = {};
-  const queryOrHash = url.includes('#') ? url.split('#')[1] : url.split('?')[1];
-  if (!queryOrHash) return params;
+  // Read both the query (?code=…, ?error=…) and the fragment (#access_token=…)
+  const [beforeHash, hash = ''] = url.split('#');
+  const query = beforeHash.includes('?') ? beforeHash.split('?')[1] : '';
 
-  const pairs = queryOrHash.split('&');
-  for (const pair of pairs) {
-    const [key, value] = pair.split('=');
-    if (key && value) {
-      params[decodeURIComponent(key)] = decodeURIComponent(value);
+  for (const part of [query, hash]) {
+    if (!part) continue;
+    for (const pair of part.split('&')) {
+      const [key, ...rest] = pair.split('=');
+      const value = rest.join('=');
+      if (key && value) {
+        params[decodeURIComponent(key)] = decodeURIComponent(value);
+      }
     }
   }
   return params;
