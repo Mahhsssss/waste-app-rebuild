@@ -28,7 +28,7 @@ import {
 } from '../services/categoryService';
 import { addHistoryItem } from '../services/historyService';
 
-const API_URL = 'https://mahhsssss--waste-detection-detect.modal.run';
+const API_URL = 'https://mahhsssss--waste-detector-server-detect.modal.run';
 
 const TIPS = [
   { icon: 'cube-outline', text: 'One item at a time' },
