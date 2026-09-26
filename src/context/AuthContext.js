@@ -9,6 +9,10 @@ import {
   resendConfirmationEmail,
   signOut as authSignOut,
 } from '../services/authService';
+import { setHistoryUser } from '../services/historyService';
+import { setReportsUser } from '../services/reportService';
+
+const GUEST_STORAGE_KEY = 'ecoshift_guest_session';
 
 const AuthContext = createContext({});
 
@@ -67,6 +71,14 @@ export const AuthProvider = ({ children }) => {
       subscription?.unsubscribe();
     };
   }, []);
+
+  // Point scan history and reports at the current account
+  // (Supabase for signed-in accounts, this device for guests)
+  useEffect(() => {
+    setHistoryUser(user);
+    setReportsUser(user);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   const handleSignUp = async (email, password, username) => {
     const res = await signUpWithEmail(email, password, username);
@@ -130,6 +142,29 @@ export const AuthProvider = ({ children }) => {
     return await updateUserPassword(newPassword);
   };
 
+  // Saves name and phone: to Supabase for real accounts, on this device for guests
+  const handleUpdateProfile = async ({ fullName, phoneNumber }) => {
+    const metadata = { full_name: fullName, username: fullName, phone_number: phoneNumber };
+
+    if (user?.app_metadata?.provider === 'guest') {
+      const updatedUser = { ...user, user_metadata: { ...user.user_metadata, ...metadata } };
+      const updatedSession = { ...session, user: updatedUser };
+      try {
+        await ExpoSecureStoreAdapter.setItem(GUEST_STORAGE_KEY, JSON.stringify(updatedSession));
+      } catch (e) {
+        return { error: 'Could not save your profile on this device.' };
+      }
+      setSession(updatedSession);
+      setUser(updatedUser);
+      return { error: null };
+    }
+
+    const { data, error } = await supabase.auth.updateUser({ data: metadata });
+    if (error) return { error: error.message || 'Could not save your profile.' };
+    if (data?.user) setUser(data.user);
+    return { error: null };
+  };
+
   const handleSignOut = async () => {
     try {
       await ExpoSecureStoreAdapter.removeItem('ecoshift_guest_session');
@@ -164,6 +199,7 @@ export const AuthProvider = ({ children }) => {
         resendConfirmation: handleResendConfirmation,
         sendPasswordReset: handlePasswordReset,
         updatePassword: handleUpdatePassword,
+        updateProfile: handleUpdateProfile,
         signOut: handleSignOut,
       }}
     >

@@ -1,119 +1,147 @@
 import { getCategoryEmoji } from './categoryService.js';
-import { ExpoSecureStoreAdapter } from './supabase.js';
+import supabase, { ExpoSecureStoreAdapter } from './supabase.js';
+import { formatWhen } from '../utils/date';
 
-const STORAGE_KEY = 'waste_app_scan_history_v2';
+// Scan history per account.
+// - Signed-in accounts: stored in the Supabase `scan_history` table (follows the account across devices).
+// - Guests: not signed in to Supabase, so their history stays on this device.
+// AuthContext calls setHistoryUser() whenever the account changes.
+const LOCAL_PREFIX = 'waste_app_scan_history_v3_';
+const LEGACY_KEY = 'waste_app_scan_history_v2'; // old shared key that held demo scans
 
-// Default starter history items so user sees an active activity log
-const INITIAL_HISTORY = [
-  {
-    id: 'scan-1',
-    title: 'Plastic Beverage Bottle',
-    category: 'Plastics',
-    modelClass: 'plastic_bottle',
-    superCategory: 'plastic',
-    date: 'Today, 10:14 AM',
-    timestamp: Date.now() - 1000 * 60 * 35,
-    points: 15,
-    weightKg: 0.05,
-    binColor: '#EAB308',
-    status: 'Diverted to Yellow Bin',
-    emoji: getCategoryEmoji('plastic_bottle'),
-    confidence: 0.94,
-  },
-  {
-    id: 'scan-2',
-    title: 'Corrugated Shipping Box',
-    category: 'Paper & Cardboard',
-    modelClass: 'cardboard_box',
-    superCategory: 'cardboard',
-    date: 'Yesterday, 4:30 PM',
-    timestamp: Date.now() - 1000 * 60 * 60 * 20,
-    points: 25,
-    weightKg: 0.45,
-    binColor: '#2563EB',
-    status: 'Flattened & Recycled',
-    emoji: getCategoryEmoji('cardboard_box'),
-    confidence: 0.91,
-  },
-  {
-    id: 'scan-3',
-    title: 'Aluminium Beverage Can',
-    category: 'Metals',
-    modelClass: 'beverage_can',
-    superCategory: 'metal',
-    date: 'Sep 17, 1:15 PM',
-    timestamp: Date.now() - 1000 * 60 * 60 * 48,
-    points: 20,
-    weightKg: 0.15,
-    binColor: '#65A30D',
-    status: 'Cleaned & Sorted',
-    emoji: getCategoryEmoji('beverage_can'),
-    confidence: 0.88,
-  },
-  {
-    id: 'scan-4',
-    title: 'Glass Jar / Container',
-    category: 'Glass',
-    modelClass: 'glass_container',
-    superCategory: 'glass',
-    date: 'Sep 15, 6:45 PM',
-    timestamp: Date.now() - 1000 * 60 * 60 * 96,
-    points: 30,
-    weightKg: 0.65,
-    binColor: '#16A34A',
-    status: 'Sent to Greenciti Hub',
-    emoji: getCategoryEmoji('glass_container'),
-    confidence: 0.96,
-  },
-];
-
-let memoryHistory = [...INITIAL_HISTORY];
+let memoryHistory = [];
+let currentUserId = null;
+let isRemote = false;
 const listeners = new Set();
-let isInitialized = false;
 
-// Auto-load saved history from persistent storage on startup
-const initStorage = async () => {
-  if (isInitialized) return;
+ExpoSecureStoreAdapter.removeItem(LEGACY_KEY).catch(() => {});
+
+const localKeyFor = (userId) => LOCAL_PREFIX + String(userId).replace(/[^A-Za-z0-9._-]/g, '_');
+
+const notifyListeners = () => {
+  const items = getHistory();
+  listeners.forEach((listener) => listener(items));
+};
+
+const fromRow = (row) => ({
+  id: row.id,
+  title: row.title,
+  category: row.category,
+  modelClass: row.model_class,
+  superCategory: row.super_category,
+  timestamp: new Date(row.created_at).getTime(),
+  points: row.points || 0,
+  weightKg: Number(row.weight_kg) || 0,
+  binColor: row.bin_color,
+  status: row.status,
+  emoji: row.emoji,
+  confidence: row.confidence,
+  photoUri: null, // photos are not uploaded for scans
+});
+
+const toRow = (item) => ({
+  title: item.title,
+  category: item.category,
+  model_class: item.modelClass,
+  super_category: item.superCategory,
+  points: item.points,
+  weight_kg: item.weightKg,
+  bin_color: item.binColor,
+  status: item.status,
+  emoji: item.emoji,
+  confidence: item.confidence,
+  created_at: new Date(item.timestamp).toISOString(),
+});
+
+const saveLocal = async () => {
+  if (!currentUserId || isRemote) return;
   try {
-    const raw = await ExpoSecureStoreAdapter.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        memoryHistory = parsed;
-        notifyListeners();
-      }
-    }
+    await ExpoSecureStoreAdapter.setItem(localKeyFor(currentUserId), JSON.stringify(memoryHistory));
   } catch (err) {
-    console.warn('Could not load scan history from storage:', err);
-  } finally {
-    isInitialized = true;
+    console.warn('Could not save scan history on this device:', err);
   }
 };
 
-initStorage();
-
-const saveToStorage = async () => {
+const readLocal = async (userId) => {
   try {
-    await ExpoSecureStoreAdapter.setItem(STORAGE_KEY, JSON.stringify(memoryHistory));
+    const raw = await ExpoSecureStoreAdapter.getItem(localKeyFor(userId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
-    console.warn('Could not persist scan history:', err);
+    return [];
+  }
+};
+
+// Scans saved on this device before the move to Supabase are uploaded once, then removed locally
+const migrateLocalToRemote = async (userId) => {
+  const local = await readLocal(userId);
+  if (local.length === 0) return;
+  const { error } = await supabase.from('scan_history').insert(local.map(toRow));
+  if (error) {
+    console.warn('Could not upload saved scans to Supabase:', error.message);
+    return;
+  }
+  await ExpoSecureStoreAdapter.removeItem(localKeyFor(userId));
+};
+
+const loadRemote = async () => {
+  const { data, error } = await supabase
+    .from('scan_history')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) throw error;
+  return (data || []).map(fromRow);
+};
+
+// Switch to the given account's history. `user` is the signed-in user, or null when signed out.
+export const setHistoryUser = async (user) => {
+  const userId = user?.id || null;
+  const remote = !!user && user.app_metadata?.provider !== 'guest';
+  if (userId === currentUserId && remote === isRemote) return;
+
+  currentUserId = userId;
+  isRemote = remote;
+  memoryHistory = [];
+  notifyListeners();
+  if (!userId) return;
+
+  try {
+    let items;
+    if (remote) {
+      await migrateLocalToRemote(userId);
+      items = await loadRemote();
+    } else {
+      items = await readLocal(userId);
+    }
+    if (userId !== currentUserId) return; // account changed while loading
+    memoryHistory = items;
+    notifyListeners();
+  } catch (err) {
+    console.warn('Could not load scan history:', err?.message || err);
+  }
+};
+
+export const refreshHistory = async () => {
+  if (!currentUserId || !isRemote) return;
+  try {
+    const userId = currentUserId;
+    const items = await loadRemote();
+    if (userId !== currentUserId) return;
+    memoryHistory = items;
+    notifyListeners();
+  } catch (err) {
+    console.warn('Could not refresh scan history:', err?.message || err);
   }
 };
 
 export const subscribeHistory = (listener) => {
   listeners.add(listener);
-  initStorage();
   return () => listeners.delete(listener);
 };
 
-const notifyListeners = () => {
-  listeners.forEach((listener) => listener([...memoryHistory]));
-};
-
-export const getHistory = () => {
-  initStorage();
-  return [...memoryHistory];
-};
+// Dates are worked out on read so "Today, 10:14 AM" stays correct
+export const getHistory = () => memoryHistory.map((item) => ({ ...item, date: formatWhen(item.timestamp) }));
 
 export const addHistoryItem = (item) => {
   const emoji = item.emoji || getCategoryEmoji(item.modelClass || item.category || 'scrap');
@@ -123,27 +151,53 @@ export const addHistoryItem = (item) => {
     category: item.category || item.superCategory || 'Dry Waste',
     modelClass: item.modelClass || 'waste',
     superCategory: item.superCategory || 'scrap',
-    date: 'Just now',
     timestamp: Date.now(),
     points: item.points || 20,
     weightKg: item.weightKg || 0.25,
     binColor: item.binColor || '#16A34A',
     status: item.status || 'Classified & Diverted',
     emoji: emoji,
-    confidence: item.confidence || 0.90,
+    confidence: item.confidence || 0.9,
     photoUri: item.photoUri || null,
   };
 
   memoryHistory = [newItem, ...memoryHistory];
   notifyListeners();
-  saveToStorage();
+
+  if (isRemote) {
+    const userId = currentUserId;
+    supabase
+      .from('scan_history')
+      .insert(toRow(newItem))
+      .select()
+      .single()
+      .then(({ data, error }) => {
+        if (error) {
+          console.warn('Could not save scan to Supabase:', error.message);
+          return;
+        }
+        if (userId !== currentUserId) return;
+        // Swap the temporary id for the database id, keep the local photo for this session
+        memoryHistory = memoryHistory.map((h) =>
+          h.id === newItem.id ? { ...fromRow(data), photoUri: newItem.photoUri } : h
+        );
+        notifyListeners();
+      });
+  } else {
+    saveLocal();
+  }
   return newItem;
 };
 
-export const clearHistory = () => {
+export const clearHistory = async () => {
   memoryHistory = [];
   notifyListeners();
-  saveToStorage();
+  if (isRemote && currentUserId) {
+    const { error } = await supabase.from('scan_history').delete().eq('user_id', currentUserId);
+    if (error) console.warn('Could not clear scan history in Supabase:', error.message);
+  } else {
+    saveLocal();
+  }
 };
 
 export const getHistoryStats = () => {

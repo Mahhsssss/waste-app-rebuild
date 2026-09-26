@@ -88,6 +88,7 @@ export default function ReportDumpScreen({ navigation, route }) {
   const [showAuthorities, setShowAuthorities] = useState(false);
   const [additionalMessage, setAdditionalMessage] = useState('');
   const [showPreview, setShowPreview] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const selectedAuthority = AUTHORITIES.find((a) => a.name === authority) || AUTHORITIES[0];
 
@@ -226,20 +227,30 @@ export default function ReportDumpScreen({ navigation, route }) {
     Linking.openURL(`https://wa.me/${selectedAuthority.whatsapp}?text=${encodeURIComponent(text)}`);
   };
 
-  const handleSubmit = () => {
-    const report = submitReport({
-      title: `${wasteType} Dump`,
-      wasteType,
-      severity,
-      severityLevel: severity.startsWith('Critical') ? 'critical' : severity.startsWith('Moderate') ? 'moderate' : 'minor',
-      address: location,
-      latitude: coords.latitude,
-      longitude: coords.longitude,
-      notes: additionalMessage || 'Reported via citizen app',
-      additionalMessage,
-      photoUri,
-      authority: selectedAuthority.name,
-    });
+  const handleSubmit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    let report;
+    try {
+      report = await submitReport({
+        title: `${wasteType} Dump`,
+        wasteType,
+        severity,
+        severityLevel: severity.startsWith('Critical') ? 'critical' : severity.startsWith('Moderate') ? 'moderate' : 'minor',
+        address: location,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        notes: additionalMessage || 'Reported via citizen app',
+        additionalMessage,
+        photoUri,
+        authority: selectedAuthority.name,
+      });
+    } catch (err) {
+      Alert.alert('Could not submit', err.message || 'Please try again.');
+      return;
+    } finally {
+      setSubmitting(false);
+    }
 
     showAlert('Report submitted', 'Your report is now pinned on the community map.', [
       {
@@ -514,8 +525,14 @@ export default function ReportDumpScreen({ navigation, route }) {
                   <Text style={styles.backBtnText}>Back</Text>
                 </TouchableOpacity>
               ) : null}
-              <TouchableOpacity style={styles.nextBtn} onPress={goNext} activeOpacity={0.85}>
-                <Text style={styles.nextBtnText}>{primaryLabel}</Text>
+              <TouchableOpacity
+                style={[styles.nextBtn, submitting && { opacity: 0.8 }]}
+                onPress={goNext}
+                activeOpacity={0.85}
+                disabled={submitting}
+              >
+                {submitting ? <ActivityIndicator size="small" color={colors.white} style={{ marginRight: 8 }} /> : null}
+                <Text style={styles.nextBtnText}>{submitting ? 'Submitting…' : primaryLabel}</Text>
                 {step < STEPS.length - 1 ? (
                   <Ionicons name="arrow-forward" size={17} color={colors.white} style={{ marginLeft: 6 }} />
                 ) : null}

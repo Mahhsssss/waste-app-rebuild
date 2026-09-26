@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -15,22 +15,68 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import globalStyles, { colors, spacing, radius } from '../globalStyles';
 import showAlert from '../utils/alert';
+import { getHistoryStats, subscribeHistory } from '../services/historyService';
+import { getMyReports, subscribeReports } from '../services/reportService';
+
+// Level shown under the name, based on eco points earned from scans
+const getLevel = (points) => {
+  if (points >= 300) return 'Eco Champion';
+  if (points >= 150) return 'Green Guardian';
+  if (points >= 50) return 'Green Helper';
+  return 'Eco Starter';
+};
 
 export default function ProfileScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const { session, signOut } = useAuth();
-  const userEmail = session?.user?.email || 'citizen@ecoshift.app';
-  const initialName = session?.user?.user_metadata?.full_name || userEmail.split('@')[0] || 'Eco Citizen';
+  const { user, signOut, updateProfile } = useAuth();
+  const isGuest = user?.app_metadata?.provider === 'guest';
+  const userEmail = isGuest ? 'Guest account' : user?.email || '';
+  const savedName =
+    user?.user_metadata?.full_name || (user?.email ? user.email.split('@')[0] : '') || 'Eco Citizen';
+  const savedPhone = user?.user_metadata?.phone_number || '';
 
-  const [displayName, setDisplayName] = useState(initialName);
-  const [phoneNumber, setPhoneNumber] = useState('+91 98200 12345');
+  const [displayName, setDisplayName] = useState(savedName);
+  const [phoneNumber, setPhoneNumber] = useState(savedPhone);
   const [isEditing, setIsEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [stats, setStats] = useState(getHistoryStats());
+  const [reportCount, setReportCount] = useState(getMyReports().length);
 
-  const handleSaveProfile = () => {
+  useEffect(() => {
+    const unsubHistory = subscribeHistory(() => setStats(getHistoryStats()));
+    const unsubReports = subscribeReports(() => setReportCount(getMyReports().length));
+    return () => {
+      unsubHistory();
+      unsubReports();
+    };
+  }, []);
+
+  const handleToggleEdit = () => {
+    if (isEditing) {
+      // Cancel: put back the saved values
+      setDisplayName(savedName);
+      setPhoneNumber(savedPhone);
+    }
+    setIsEditing(!isEditing);
+  };
+
+  const handleSaveProfile = async () => {
+    const name = displayName.trim();
+    if (!name) {
+      showAlert('Name required', 'Please enter your name.');
+      return;
+    }
+    setSaving(true);
+    const { error } = await updateProfile({ fullName: name, phoneNumber: phoneNumber.trim() });
+    setSaving(false);
+    if (error) {
+      showAlert('Could not save', error);
+      return;
+    }
     setIsEditing(false);
-    showAlert('Profile Updated', 'Your profile details have been saved successfully.');
+    showAlert('Profile updated', 'Your details have been saved.');
   };
 
   const handleLogout = () => {
@@ -65,7 +111,7 @@ export default function ProfileScreen({ navigation }) {
             </TouchableOpacity>
             <Text style={styles.headerTitle}>My Profile</Text>
             <TouchableOpacity
-              onPress={() => setIsEditing(!isEditing)}
+              onPress={handleToggleEdit}
               style={styles.editToggleBtn}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
@@ -84,37 +130,45 @@ export default function ProfileScreen({ navigation }) {
             <View style={styles.avatarCard}>
               <View style={styles.avatarCircle}>
                 <Text style={styles.avatarInitials}>
-                  {displayName.charAt(0).toUpperCase()}
+                  {(displayName || savedName).charAt(0).toUpperCase()}
                 </Text>
-                <View style={styles.verifiedBadge}>
-                  <Ionicons name="checkmark" size={12} color={colors.white} />
-                </View>
+                {!isGuest ? (
+                  <View style={styles.verifiedBadge}>
+                    <Ionicons name="checkmark" size={12} color={colors.white} />
+                  </View>
+                ) : null}
               </View>
 
-              <Text style={styles.userName}>{displayName}</Text>
+              <Text style={styles.userName}>{savedName}</Text>
               <Text style={styles.userEmail}>{userEmail}</Text>
 
               <View style={styles.tierPill}>
                 <Ionicons name="shield-checkmark" size={14} color="#16A34A" style={{ marginRight: 4 }} />
-                <Text style={styles.tierText}>Green Guardian ₪ Tier 3</Text>
+                <Text style={styles.tierText}>{getLevel(stats.totalPoints)}</Text>
               </View>
             </View>
 
             {/* Impact Badges Row */}
             <View style={styles.statsRow}>
               <View style={styles.statBox}>
-                <Text style={styles.statNum}>90</Text>
+                <Text style={styles.statNum}>{stats.totalPoints}</Text>
                 <Text style={styles.statLabel}>Eco Points</Text>
               </View>
               <View style={styles.statBox}>
-                <Text style={styles.statNum}>4</Text>
+                <Text style={styles.statNum}>{stats.totalScans}</Text>
                 <Text style={styles.statLabel}>Scans</Text>
               </View>
               <View style={styles.statBox}>
-                <Text style={styles.statNum}>3</Text>
+                <Text style={styles.statNum}>{reportCount}</Text>
                 <Text style={styles.statLabel}>Dumps Reported</Text>
               </View>
             </View>
+
+            {isGuest ? (
+              <Text style={styles.guestNote}>
+                You're using a guest account. Your scans and reports are saved on this phone only.
+              </Text>
+            ) : null}
 
             {/* Editable Profile Information */}
             <View style={styles.section}>
@@ -147,35 +201,63 @@ export default function ProfileScreen({ navigation }) {
                   onChangeText={setPhoneNumber}
                   editable={isEditing}
                   keyboardType="phone-pad"
+                  placeholder={isEditing ? 'Add a phone number' : 'Not added'}
+                  placeholderTextColor={colors.placeholder}
                 />
               </View>
 
               {isEditing && (
-                <TouchableOpacity style={styles.saveBtn} onPress={handleSaveProfile}>
-                  <Text style={styles.saveBtnText}>Save Changes</Text>
+                <TouchableOpacity
+                  style={[styles.saveBtn, saving && { opacity: 0.7 }]}
+                  onPress={handleSaveProfile}
+                  disabled={saving}
+                >
+                  {saving ? (
+                    <ActivityIndicator size="small" color="#ffffff" />
+                  ) : (
+                    <Text style={styles.saveBtnText}>Save Changes</Text>
+                  )}
                 </TouchableOpacity>
               )}
             </View>
 
-            {/* Eco Achievements */}
+            {/* Eco Achievements: ticked only once earned */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Eco Milestones</Text>
-              <View style={styles.milestoneCard}>
-                <Ionicons name="leaf" size={24} color="#16A34A" style={{ marginRight: 12 }} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.milestoneTitle}>Early Adopter</Text>
-                  <Text style={styles.milestoneSub}>Scanned first recyclable waste item</Text>
+              {[
+                {
+                  icon: 'leaf',
+                  title: 'Early Adopter',
+                  sub: 'Scan your first waste item',
+                  done: stats.totalScans > 0,
+                },
+                {
+                  icon: 'shield-checkmark',
+                  title: 'Civic Watchdog',
+                  sub: 'Report an illegal trash dump',
+                  done: reportCount > 0,
+                },
+              ].map((m) => (
+                <View key={m.title} style={[styles.milestoneCard, !m.done && styles.milestoneLocked]}>
+                  <Ionicons
+                    name={m.icon}
+                    size={24}
+                    color={m.done ? '#16A34A' : colors.placeholder}
+                    style={{ marginRight: 12 }}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.milestoneTitle, !m.done && { color: colors.textSecondary }]}>
+                      {m.title}
+                    </Text>
+                    <Text style={styles.milestoneSub}>{m.sub}</Text>
+                  </View>
+                  <Ionicons
+                    name={m.done ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={20}
+                    color={m.done ? '#16A34A' : colors.placeholder}
+                  />
                 </View>
-                <Ionicons name="checkmark-circle" size={20} color="#16A34A" />
-              </View>
-              <View style={styles.milestoneCard}>
-                <Ionicons name="shield-checkmark" size={24} color="#16A34A" style={{ marginRight: 12 }} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.milestoneTitle}>Civic Watchdog</Text>
-                  <Text style={styles.milestoneSub}>Reported an illegal trash dump</Text>
-                </View>
-                <Ionicons name="checkmark-circle" size={20} color="#16A34A" />
-              </View>
+              ))}
             </View>
 
             {/* Logout Action */}
@@ -306,6 +388,7 @@ const styles = StyleSheet.create({
   },
   statNum: { fontSize: 20, fontWeight: '800', color: colors.primary800 },
   statLabel: { fontSize: 11, color: colors.textSecondary, marginTop: 2, fontWeight: '600' },
+  guestNote: { fontSize: 12, color: colors.textSecondary, textAlign: 'center', marginTop: spacing.xs, lineHeight: 17 },
   section: { marginTop: spacing.md },
   sectionTitle: { fontSize: 16, fontWeight: '800', color: colors.primary800, marginBottom: spacing.xs },
   inputGroup: { marginBottom: 12 },
@@ -339,6 +422,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     marginBottom: 8,
   },
+  milestoneLocked: { backgroundColor: colors.white, borderStyle: 'dashed' },
   milestoneTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
   milestoneSub: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
   logoutBtn: {

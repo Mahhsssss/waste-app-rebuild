@@ -20,7 +20,8 @@ import { BottomTabBarHeightContext } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { colors, spacing, radius } from '../globalStyles';
-import { getReports, subscribeReports } from '../services/reportService';
+import { getReports, subscribeReports, refreshReports, deleteReport } from '../services/reportService';
+import showAlert from '../utils/alert';
 import { DEFAULT_RECOVERY_HUBS, fetchRecoveryHubs } from '../services/hubService';
 import { getCurrentCoords } from '../utils/location';
 
@@ -211,6 +212,7 @@ export default function MapScreen({ navigation, route }) {
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState(false);
   const [sheetExpanded, setSheetExpanded] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   const webViewRef = useRef(null);
   const iframeRef = useRef(null);
@@ -249,8 +251,13 @@ export default function MapScreen({ navigation, route }) {
     const unsubscribe = subscribeReports((updated) => {
       setReports(updated);
     });
-    return () => unsubscribe();
-  }, []);
+    // Pick up reports other people have added since the map was last opened
+    const unsubscribeFocus = navigation.addListener('focus', refreshReports);
+    return () => {
+      unsubscribe();
+      unsubscribeFocus();
+    };
+  }, [navigation]);
 
   const allMarkers = useMemo(() => {
     const dumpMarkers = reports.map((r) => ({ ...r, type: 'dump', isDump: true }));
@@ -461,6 +468,27 @@ export default function MapScreen({ navigation, route }) {
     Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`);
   };
 
+  const confirmDeleteReport = (report) => {
+    showAlert('Delete this report?', 'It will be removed from the map for everyone. This can\'t be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          setDeletingId(report.id);
+          try {
+            await deleteReport(report);
+            setSelectedMarker(null);
+          } catch (err) {
+            showAlert('Could not delete', err.message || 'Please try again.');
+          } finally {
+            setDeletingId(null);
+          }
+        },
+      },
+    ]);
+  };
+
   const handleFilterPress = (key) => {
     setSelectedFilter(key);
     setSelectedMarker(null);
@@ -581,6 +609,20 @@ export default function MapScreen({ navigation, route }) {
               color={colors.primary800}
             />
           </TouchableOpacity>
+          {m.isMyReport ? (
+            <TouchableOpacity
+              style={[styles.outlineBtn, styles.deleteBtn]}
+              onPress={() => confirmDeleteReport(m)}
+              disabled={deletingId === m.id}
+              accessibilityLabel="Delete report"
+            >
+              {deletingId === m.id ? (
+                <ActivityIndicator size="small" color="#DC2626" />
+              ) : (
+                <Ionicons name="trash-outline" size={16} color="#DC2626" />
+              )}
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {/* Full details, revealed when the sheet is swiped up */}
@@ -985,6 +1027,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  deleteBtn: { borderColor: '#FECACA', backgroundColor: '#FEF2F2' },
   detailBlock: { marginTop: spacing.lg },
   detailPhoto: { width: '100%', height: 160, borderRadius: radius.lg, marginBottom: spacing.base },
   detailSection: { marginBottom: spacing.base },

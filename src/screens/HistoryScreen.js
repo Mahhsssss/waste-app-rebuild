@@ -12,7 +12,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import globalStyles, { colors, spacing, radius } from '../globalStyles';
-import { getHistory, subscribeHistory, getHistoryStats } from '../services/historyService';
+import { getHistory, subscribeHistory, getHistoryStats, refreshHistory } from '../services/historyService';
 
 export default function HistoryScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -30,9 +30,17 @@ export default function HistoryScreen({ navigation }) {
       setHistory(updated);
       setStats(getHistoryStats());
     });
+    // Pick up scans made on other devices, and refresh the "Today, 10:14 AM" labels
+    const unsubscribeFocus = navigation.addListener('focus', () => {
+      setHistory(getHistory());
+      refreshHistory();
+    });
 
-    return () => unsubscribe();
-  }, []);
+    return () => {
+      unsubscribe();
+      unsubscribeFocus();
+    };
+  }, [navigation]);
 
   const filterCategories = ['All', 'Plastics', 'Paper & Cardboard', 'Metals', 'Glass', 'E-Waste'];
 
