@@ -15,7 +15,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { File } from 'expo-file-system';
-import { preparePhoto } from '../utils/photo';
+import { prepareScanPhoto } from '../utils/photo';
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors, spacing, radius } from '../globalStyles';
@@ -28,7 +28,14 @@ import {
 } from '../services/categoryService';
 import { addHistoryItem } from '../services/historyService';
 
-const API_URL = 'https://mahhsssss--waste-detector-server-detect.modal.run';
+const API_URL =
+  process.env.EXPO_PUBLIC_MODEL_API_URL ||
+  'https://mahhsssss-third-waste-detector--third-waste-detector-ser-e080da.modal.run';
+
+// Model confidence bands: at or above ACCEPT the result opens straight away; between CONFIRM and
+// ACCEPT the user confirms the guess first; below CONFIRM the photo counts as not recognised
+const ACCEPT_CONFIDENCE = 0.6;
+const CONFIRM_CONFIDENCE = 0.3;
 
 const TIPS = [
   { icon: 'cube-outline', text: 'One item at a time' },
@@ -76,6 +83,25 @@ export default function ScanScreen({ navigation }) {
     fileInput.click();
   };
 
+  // Log an AI-detected item (+25 eco-points) and open its disposal advice
+  const openScanResult = async (detectedClass, confidence, imageUri) => {
+    const category = await fetchCategoryByModelClass(detectedClass);
+    addHistoryItem({
+      title: category?.name ? (category.name.charAt(0).toUpperCase() + category.name.slice(1)) : normalizeClassName(detectedClass),
+      category: category?.super_category || 'Scrap',
+      modelClass: detectedClass,
+      superCategory: category?.super_category,
+      confidence: confidence || 0.92,
+      points: 25,
+      photoUri: imageUri,
+    });
+    navigation.navigate('RecycleAdviceScreen', {
+      category,
+      modelClass: detectedClass,
+      confidence,
+    });
+  };
+
   // Handle classification of any image URI (camera app or gallery)
   const classifyImageUri = async (rawUri, width, height) => {
     if (!rawUri) return;
@@ -83,7 +109,7 @@ export default function ScanScreen({ navigation }) {
     setLoading(true);
 
     try {
-      const imageUri = await preparePhoto(rawUri, width, height);
+      const imageUri = await prepareScanPhoto(rawUri, width, height);
       const formData = new FormData();
       if (Platform.OS === 'web') {
         const res = await fetch(imageUri);
@@ -105,34 +131,38 @@ export default function ScanScreen({ navigation }) {
       }
 
       const result = await response.json();
+      console.log('[scan] model response', JSON.stringify(result));
+
+      // The Modal detector returns { class_id, confidence }: class_id is the categories-table id (1-59,
+      // same order as YOLO_CLASSES), or -1 when nothing passes the server's confidence threshold
+      const classId = Number.isInteger(result.class_id) ? result.class_id : -1;
+      const confidence = typeof result.confidence === 'number' ? result.confidence : null;
 
       const detectedClass =
+        (classId > 0 ? YOLO_CLASSES[classId - 1] : null) ||
         result.class ||
         result.prediction ||
         (result.detections && result.detections[0]?.class) ||
         (Array.isArray(result) && result[0]?.class) ||
         result.label;
 
-      if (detectedClass && detectedClass !== 'nothing') {
-        const category = await fetchCategoryByModelClass(detectedClass);
-        addHistoryItem({
-          title: category?.name ? (category.name.charAt(0).toUpperCase() + category.name.slice(1)) : normalizeClassName(detectedClass),
-          category: category?.super_category || 'Scrap',
-          modelClass: detectedClass,
-          superCategory: category?.super_category,
-          confidence: result.confidence || 0.92,
-          points: 25,
-          photoUri: imageUri,
-        });
-        navigation.navigate('RecycleAdviceScreen', {
-          category,
-          modelClass: detectedClass,
-          confidence: result.confidence,
-        });
-      } else {
+      const recognised =
+        detectedClass && detectedClass !== 'nothing' && (confidence === null || confidence >= CONFIRM_CONFIDENCE);
+
+      if (!recognised) {
         showAlert('Scan Result', 'No recyclable waste recognized in this photo. Try another angle or select from our catalog.', [
           { text: 'Catalog of 59 Items', onPress: () => setShowTestPicker(true) },
           { text: 'Try Again', style: 'cancel' },
+        ]);
+      } else if (confidence === null || confidence >= ACCEPT_CONFIDENCE) {
+        await openScanResult(detectedClass, confidence, imageUri);
+      } else {
+        // Medium confidence: show the model's guess and let the user confirm it or pick the item themselves
+        const itemName = normalizeClassName(detectedClass);
+        const label = itemName.charAt(0).toUpperCase() + itemName.slice(1);
+        showAlert('Is this right?', `This looks like ${label} (${Math.round(confidence * 100)}% sure).`, [
+          { text: 'Pick from catalog', style: 'cancel', onPress: () => setShowTestPicker(true) },
+          { text: 'Yes', onPress: () => openScanResult(detectedClass, confidence, imageUri) },
         ]);
       }
     } catch (e) {
